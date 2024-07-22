@@ -13,14 +13,14 @@ namespace BinaryMemory
     public class BinaryMemoryReader
     {
         /// <summary>
-        /// Steps into positions.
-        /// </summary>
-        private readonly Stack<int> _steps;
-
-        /// <summary>
         /// The underlying memory.
         /// </summary>
         private readonly Memory<byte> _memory;
+
+        /// <summary>
+        /// Steps into positions.
+        /// </summary>
+        private readonly Stack<int> _steps;
 
         /// <summary>
         /// The current position of the reader.
@@ -29,23 +29,23 @@ namespace BinaryMemory
         private int _position;
 
         /// <summary>
-        /// Whether or not to read in big endian byte ordering.
-        /// </summary>
-        public bool BigEndian { get; set; }
-
-        /// <summary>
         /// The current position of the reader.
         /// </summary>
-        public int Position
+        public long Position
         {
             get => _position;
             set
             {
-                ArgumentOutOfRangeException.ThrowIfGreaterThan((uint)value, (uint)Length, nameof(value));
+                ArgumentOutOfRangeException.ThrowIfGreaterThan((uint)value, (uint)_memory.Length, nameof(value));
 
-                _position = value;
+                _position = (int)value;
             }
         }
+
+        /// <summary>
+        /// Whether or not to read in big endian byte ordering.
+        /// </summary>
+        public bool BigEndian { get; set; }
 
         /// <summary>
         /// How many bytes to read for variable sized values.<para/>
@@ -58,14 +58,29 @@ namespace BinaryMemory
         public int VariableValueSize { get; set; }
 
         /// <summary>
+        /// The backing memory.
+        /// </summary>
+        public ReadOnlyMemory<byte> Memory => _memory;
+
+        /// <summary>
         /// The length of the underlying memory.
         /// </summary>
-        public int Length => _memory.Length;
+        private int _length => _memory.Length;
+
+        /// <summary>
+        /// The length of the underlying memory.
+        /// </summary>
+        public long Length => _length;
 
         /// <summary>
         /// The remaining length starting from the current position.
         /// </summary>
-        public int Remaining => Length - Position;
+        private int _remaining => _length - _position;
+
+        /// <summary>
+        /// The remaining length starting from the current position.
+        /// </summary>
+        public long Remaining => _remaining;
 
         /// <summary>
         /// The amount of positions the reader is stepped into.
@@ -87,24 +102,40 @@ namespace BinaryMemory
 
         #region Position
 
-        public void Advance(int count) => Position += count;
+        public void Advance()
+            => _position++;
 
-        public void Rewind(int count) => Position -= count;
+        public void Advance(int count)
+            => _position += count;
 
-        public void Reset() => _position = 0;
+        public void Rewind()
+            => _position--;
+
+        public void Rewind(int count)
+            => _position -= count;
+
+        public void GotoStart()
+            => _position = 0;
+
+        public void GotoEnd()
+            => _position = _length;
+
+        #endregion
+
+        #region Align
 
         public void Align(int alignment)
         {
             int remainder = _position % alignment;
             if (remainder > 0)
             {
-                Position += alignment - remainder;
+                _position += alignment - remainder;
             }
         }
 
-        public void AlignFrom(int position, int alignment)
+        public void AlignFrom(long position, int alignment)
         {
-            int remainder = position % alignment;
+            long remainder = position % alignment;
             if (remainder > 0)
             {
                 position += alignment - remainder;
@@ -116,31 +147,25 @@ namespace BinaryMemory
 
         #region Step
 
-        public void StepIn(int position)
+        public void StepIn(long position)
         {
-            _steps.Push(Position);
+            _steps.Push(_position);
             Position = position;
         }
 
         public void StepOut()
         {
-            Position = _steps.Pop();
+            if (_steps.Count < 1)
+            {
+                throw new InvalidOperationException("Reader is already stepped all the way out.");
+            }
+
+            _position = _steps.Pop();
         }
 
         #endregion
 
-        #region Memory Read
-
-        public Memory<byte> ReadByteMemory(int size)
-        {
-            var value = _memory.Slice(Position, size);
-            Position += size;
-            return value;
-        }
-
-        #endregion
-
-        #region Read Helpers
+        #region Read
 
         private T ReadEndian<T>(Func<T, T> reverseEndianness) where T : unmanaged
         {
@@ -163,116 +188,97 @@ namespace BinaryMemory
             return Read<TTo>();
         }
 
-        private T[] ReadArrayEndian<T>(Func<T, T> reverseEndianness, int count) where T : unmanaged
+        private static TEnum ReadEnum<TEnum, TValue>(Func<TValue> read, string valueFormat)
+            where TEnum : Enum
+            where TValue : notnull
         {
-            if (BigEndian != !BitConverter.IsLittleEndian)
+            TValue value = read();
+            if (!Enum.IsDefined(typeof(TEnum), value))
             {
-                var values = new T[count];
-                for (int i = 0; i < count; i++)
-                {
-                    values[i] = reverseEndianness(Read<T>());
-                }
-                return values;
+                throw new InvalidDataException($"Read value not present in enum: {string.Format(valueFormat, value)}");
             }
-
-            return ReadSpan<T>(count).ToArray();
+            return (TEnum)(object)value;
         }
 
-        private TTo[] ReadArrayEndianConvert<TFrom, TTo>(Func<TFrom, TFrom> reverseEndianness, Func<TFrom, TTo> convert, int count)
-            where TFrom : unmanaged
-            where TTo : unmanaged
+        protected byte[] Read8BitTerminatedStringBytes()
         {
-            if (BigEndian != !BitConverter.IsLittleEndian)
+            var bytes = new List<byte>();
+            byte b = ReadByte();
+            while (b != 0)
             {
-                var values = new TTo[count];
-                for (int i = 0; i < count; i++)
-                {
-                    values[i] = convert(reverseEndianness(Read<TFrom>()));
-                }
-                return values;
+                bytes.Add(b);
+                b = ReadByte();
             }
-
-            return ReadSpan<TTo>(count).ToArray();
+            return [.. bytes];
         }
 
-        private static T[] ReadArray<T>(Func<T> read, int count) where T : unmanaged
+        protected byte[] Read16BitTerminatedStringBytes()
         {
-            var values = new T[count];
-            for (int i = 0; i < count; i++)
+            var bytes = new List<byte>();
+            byte a = ReadByte();
+            byte b = ReadByte();
+            while ((a | b) != 0)
             {
-                values[i] = read();
+                bytes.Add(a);
+                bytes.Add(b);
+                a = ReadByte();
+                b = ReadByte();
             }
-            return values;
+            return [.. bytes];
         }
 
-        private TTo[] ReadArrayEndianCast<TFrom, TTo>(Func<TFrom, TFrom> reverseEndianness, Func<TFrom, TTo> cast, int count)
-            where TFrom : unmanaged
-            where TTo : unmanaged
+        protected byte[] Read32BitTerminatedStringBytes()
         {
-            var values = new TTo[count];
-            if (BigEndian != !BitConverter.IsLittleEndian)
+            var bytes = new List<byte>();
+            byte a = ReadByte();
+            byte b = ReadByte();
+            byte c = ReadByte();
+            byte d = ReadByte();
+            while ((a | b | c | d) != 0)
             {
-                for (int i = 0; i < count; i++)
-                {
-                    values[i] = cast(reverseEndianness(Read<TFrom>()));
-                }
+                bytes.Add(a);
+                bytes.Add(b);
+                bytes.Add(c);
+                bytes.Add(d);
+                a = ReadByte();
+                b = ReadByte();
+                c = ReadByte();
+                d = ReadByte();
             }
-            else
-            {
-                for (int i = 0; i < count; i++)
-                {
-                    values[i] = cast(Read<TFrom>());
-                }
-            }
-
-            return values;
+            return [.. bytes];
         }
 
-        private TTo[] ReadArrayCheckEndiannessConvertAndCast<TRead, TFrom, TTo>(Func<TRead, TRead> reverseEndianness, Func<TRead, TFrom> convert, Func<TFrom, TTo> cast, int count)
-            where TRead : unmanaged
-            where TFrom : unmanaged
-            where TTo : unmanaged
+        protected byte[] ReadTerminatedStringBytes(int bytesPerChar)
         {
-            var values = new TTo[count];
-            if (BigEndian != !BitConverter.IsLittleEndian)
+            var bytes = new List<byte>();
+            byte[] readBytes = ReadBytes(bytesPerChar);
+
+            bool IsNull()
             {
-                for (int i = 0; i < count; i++)
+                foreach (byte b in readBytes)
                 {
-                    values[i] = cast(convert(reverseEndianness(Read<TRead>())));
+                    if (b != 0)
+                    {
+                        return false;
+                    }
                 }
+                return true;
             }
-            else
+
+            while (!IsNull())
             {
-                for (int i = 0; i < count; i++)
-                {
-                    values[i] = cast(convert(Read<TRead>()));
-                }
+                bytes.AddRange(readBytes);
+                readBytes = ReadBytes(bytesPerChar);
             }
 
-            return values;
+            return [.. bytes];
         }
-
-        private TTo[] ReadArrayAndCast<TFrom, TTo>(Func<TFrom, TTo> cast, int count)
-            where TFrom : unmanaged
-            where TTo : unmanaged
-        {
-            var values = new TTo[count];
-            for (int i = 0; i < count; i++)
-            {
-                values[i] = cast(Read<TFrom>());
-            }
-            return values;
-        }
-
-        #endregion
-
-        #region Read
 
         public unsafe T Read<T>() where T : unmanaged
         {
             int size = sizeof(T);
             int endPosition = _position + size;
-            if (endPosition > Length)
+            if (endPosition > _memory.Length)
             {
                 throw new InvalidOperationException("Cannot read beyond the specified region of memory.");
             }
@@ -282,532 +288,44 @@ namespace BinaryMemory
             return value;
         }
 
-        public unsafe Span<T> ReadSpan<T>(int count) where T : unmanaged
-        {
-            int size = sizeof(T) * count;
-            int endPosition = _position + size;
-            if (endPosition > Length)
-            {
-                throw new InvalidOperationException("Cannot read beyond the specified region of memory.");
-            }
-            var value = MemoryMarshal.Cast<byte, T>(_memory.Span.Slice(_position, size));
-            _position = endPosition;
-            return value;
-        }
-
-        public unsafe T[] ReadArray<T>(int count) where T : unmanaged
-            => ReadSpan<T>(count).ToArray();
-
-        #endregion
-
-        #region Get
-
-        public T Get<T>(int position) where T : unmanaged
-        {
-            var returnPosition = Position;
-            Position = position;
-            var value = Read<T>();
-            Position = returnPosition;
-            return value;
-        }
-
-        public Span<T> GetSpan<T>(int position, int count) where T : unmanaged
-        {
-            var returnPosition = Position;
-            Position = position;
-            var values = ReadSpan<T>(count);
-            Position = returnPosition;
-            return values;
-        }
-
-        public T[] GetArray<T>(int position, int count) where T : unmanaged
-        {
-            var returnPosition = Position;
-            Position = position;
-            var values = ReadArray<T>(count);
-            Position = returnPosition;
-            return values;
-        }
-
-        private T Get<T>(Func<T> read, int position)
-        {
-            var startPosition = Position;
-            Position = position;
-            var value = read();
-            Position = startPosition;
-            return value;
-        }
-
-        #endregion
-
-        #region Peek
-
-        public unsafe T Peek<T>() where T : unmanaged
-        {
-            int size = sizeof(T);
-            if ((Position + size) > Length)
-            {
-                throw new InvalidOperationException("Cannot read beyond the specified region of memory.");
-            }
-
-            return Unsafe.ReadUnaligned<T>(ref Unsafe.Add(ref MemoryMarshal.GetReference(_memory.Span), Position));
-        }
-
-        public unsafe Span<T> PeekSpan<T>(int count) where T : unmanaged
-        {
-            int size = sizeof(T) * count;
-            if ((Position + size) > Length)
-            {
-                throw new InvalidOperationException("Cannot read beyond the specified region of memory.");
-            }
-            return MemoryMarshal.Cast<byte, T>(_memory.Span.Slice(Position, size));
-        }
-
-        public T[] PeekArray<T>(int count) where T : unmanaged
-            => PeekSpan<T>(count).ToArray();
-
-        private T Peek<T>(Func<T> read)
-        {
-            var startPosition = Position;
-            var value = read();
-            Position = startPosition;
-            return value;
-        }
-
-        #endregion
-
-        #region Assert
-
-        private T Assert<T>(T value, string typeName, string valueFormat, T option) where T : IEquatable<T>
-        {
-            if (value.Equals(option))
-            {
-                return value;
-            }
-
-            string strValue = string.Format(valueFormat, value);
-            string strOption = string.Format(valueFormat, option);
-            throw new InvalidDataException($"Read {typeName}: {strValue} | Expected: {strOption} | Ending position: 0x{Position:X}");
-        }
-
-        private T Assert<T>(T value, string typeName, string valueFormat, ReadOnlySpan<T> options) where T : IEquatable<T>
-        {
-            foreach (T option in options)
-            {
-                if (value.Equals(option))
-                {
-                    return value;
-                }
-            }
-
-            string strValue = string.Format(valueFormat, value);
-            string strOptions = string.Join(", ", options.ToArray().Select(o => string.Format(valueFormat, o)));
-            throw new InvalidDataException($"Read {typeName}: {strValue} | Expected: {strOptions} | Ending position: 0x{Position:X}");
-        }
-
-        private string AssertString(string value, string encodingName, string option)
-        {
-            if (value.Equals(option))
-            {
-                return value;
-            }
-
-            throw new InvalidDataException($"Read {encodingName}: {value} | Expected: {option} | Ending position: 0x{Position:X}");
-        }
-
-        private string AssertString(string value, string encodingName, ReadOnlySpan<string> options)
-        {
-            foreach (string option in options)
-            {
-                if (value.Equals(option))
-                {
-                    return value;
-                }
-            }
-
-            string joinedOptions = string.Join(", ", options.ToArray());
-            throw new InvalidDataException($"Read {encodingName}: {value} | Expected: {joinedOptions} | Ending position: 0x{Position:X}");
-        }
-
-        public void AssertBytePattern(int length, byte pattern)
-        {
-            byte[] bytes = ReadBytes(length);
-            for (int i = 0; i < length; i++)
-            {
-                if (bytes[i] != pattern)
-                {
-                    throw new InvalidDataException($"Read {bytes[i]:X2} at position {i} | Expected {length} 0x{pattern:X2}");
-                }
-            }
-        }
-
-        #endregion
-
-        #region SByte
-
         public sbyte ReadSByte()
             => Read<sbyte>();
-
-        public sbyte[] ReadSBytes(int count)
-            => ReadArray<sbyte>(count);
-
-        public sbyte GetSByte(int position)
-            => Get<sbyte>(position);
-
-        public sbyte[] GetSBytes(int position, int count)
-            => GetArray<sbyte>(position, count);
-
-        public sbyte PeekSByte()
-            => Peek<sbyte>();
-
-        public sbyte[] PeekSBytes(int count)
-            => PeekArray<sbyte>(count);
-
-        public sbyte AssertSByte(sbyte option)
-            => Assert(ReadSByte(), nameof(SByte), "0x{0:X}", option);
-
-        public sbyte AssertSByte(ReadOnlySpan<sbyte> options)
-            => Assert(ReadSByte(), nameof(SByte), "0x{0:X}", options);
-
-        #endregion
-
-        #region Byte
 
         public byte ReadByte()
             => Read<byte>();
 
-        public byte[] ReadBytes(int count)
-            => ReadArray<byte>(count);
-
-        public byte GetByte(int position)
-            => Get<byte>(position);
-
-        public byte[] GetBytes(int position, int count)
-            => GetArray<byte>(position, count);
-
-        public byte PeekByte()
-            => Peek<byte>();
-
-        public byte[] PeekBytes(int count)
-            => PeekArray<byte>(count);
-
-        public byte AssertByte(byte option)
-            => Assert(ReadByte(), nameof(Byte), "0x{0:X}", option);
-
-        public byte AssertByte(ReadOnlySpan<byte> options)
-            => Assert(ReadByte(), nameof(Byte), "0x{0:X}", options);
-
-        #endregion
-
-        #region Int16
-
         public short ReadInt16()
             => ReadEndian<short>(BinaryPrimitives.ReverseEndianness);
-
-        public short[] ReadInt16s(int count)
-            => ReadArrayEndian<short>(BinaryPrimitives.ReverseEndianness, count);
-
-        public short GetInt16(int position)
-            => Get(ReadInt16, position);
-
-        public short[] GetInt16s(int position, int count)
-            => Get(() => ReadInt16s(count), position);
-
-        public short PeekInt16()
-            => Peek(ReadInt16);
-
-        public short[] PeekInt16s(int count)
-            => Peek(() => ReadInt16s(count));
-
-        public short AssertInt16(short option)
-            => Assert(ReadInt16(), nameof(Int16), "0x{0:X}", option);
-
-        public short AssertInt16(ReadOnlySpan<short> options)
-            => Assert(ReadInt16(), nameof(Int16), "0x{0:X}", options);
-
-        #endregion
-
-        #region UInt16
 
         public ushort ReadUInt16()
             => ReadEndian<ushort>(BinaryPrimitives.ReverseEndianness);
 
-        public ushort[] ReadUInt16s(int count)
-            => ReadArrayEndian<ushort>(BinaryPrimitives.ReverseEndianness, count);
-
-        public ushort GetUInt16(int position)
-            => Get(ReadUInt16, position);
-
-        public ushort[] GetUInt16s(int position, int count)
-            => Get(() => ReadUInt16s(count), position);
-
-        public ushort PeekUInt16()
-            => Peek(ReadUInt16);
-
-        public ushort[] PeekUInt16s(int count)
-            => Peek(() => ReadUInt16s(count));
-
-        public ushort AssertUInt16(ushort option)
-            => Assert(ReadUInt16(), nameof(UInt16), "0x{0:X}", option);
-
-        public ushort AssertUInt16(ReadOnlySpan<ushort> options)
-            => Assert(ReadUInt16(), nameof(UInt16), "0x{0:X}", options);
-
-        #endregion
-
-        #region Int32
-
         public int ReadInt32()
             => ReadEndian<int>(BinaryPrimitives.ReverseEndianness);
-
-        public int[] ReadInt32s(int count)
-            => ReadArrayEndian<int>(BinaryPrimitives.ReverseEndianness, count);
-
-        public int GetInt32(int position)
-            => Get(ReadInt32, position);
-
-        public int[] GetInt32s(int position, int count)
-            => Get(() => ReadInt32s(count), position);
-
-        public int PeekInt32()
-            => Peek(ReadInt32);
-
-        public int[] PeekInt32s(int count)
-            => Peek(() => ReadInt32s(count));
-
-        public int AssertInt32(int option)
-            => Assert(ReadInt32(), nameof(Int32), "0x{0:X}", option);
-
-        public int AssertInt32(ReadOnlySpan<int> options)
-            => Assert(ReadInt32(), nameof(Int32), "0x{0:X}", options);
-
-        #endregion
-
-        #region UInt32
 
         public uint ReadUInt32()
             => ReadEndian<uint>(BinaryPrimitives.ReverseEndianness);
 
-        public uint[] ReadUInt32s(int count)
-            => ReadArrayEndian<uint>(BinaryPrimitives.ReverseEndianness, count);
-
-        public uint GetUInt32(int position)
-            => Get(ReadUInt32, position);
-
-        public uint[] GetUInt32s(int position, int count)
-            => Get(() => ReadUInt32s(count), position);
-
-        public uint PeekUInt32()
-            => Peek(ReadUInt32);
-
-        public uint[] PeekUInt32s(int count)
-            => Peek(() => ReadUInt32s(count));
-
-        public uint AssertUInt32(uint option)
-            => Assert(ReadUInt32(), nameof(UInt32), "0x{0:X}", option);
-
-        public uint AssertUInt32(ReadOnlySpan<uint> options)
-            => Assert(ReadUInt32(), nameof(UInt32), "0x{0:X}", options);
-
-        #endregion
-
-        #region Int64
-
         public long ReadInt64()
             => ReadEndian<long>(BinaryPrimitives.ReverseEndianness);
-
-        public long[] ReadInt64s(int count)
-            => ReadArrayEndian<long>(BinaryPrimitives.ReverseEndianness, count);
-
-        public long GetInt64(int position)
-            => Get(ReadInt64, position);
-
-        public long[] GetInt64s(int position, int count)
-            => Get(() => ReadInt64s(count), position);
-
-        public long PeekInt64()
-            => Peek(ReadInt64);
-
-        public long[] PeekInt64s(int count)
-            => Peek(() => ReadInt64s(count));
-
-        public long AssertInt64(long option)
-            => Assert(ReadInt64(), nameof(Int64), "0x{0:X}", option);
-
-        public long AssertInt64(ReadOnlySpan<long> options)
-            => Assert(ReadInt64(), nameof(Int64), "0x{0:X}", options);
-
-        #endregion
-
-        #region UInt64
 
         public ulong ReadUInt64()
             => ReadEndian<ulong>(BinaryPrimitives.ReverseEndianness);
 
-        public ulong[] ReadUInt64s(int count)
-            => ReadArrayEndian<ulong>(BinaryPrimitives.ReverseEndianness, count);
-
-        public ulong GetUInt64(int position)
-            => Get(ReadUInt64, position);
-
-        public ulong[] GetUInt64s(int position, int count)
-            => Get(() => ReadUInt64s(count), position);
-
-        public ulong PeekUInt64()
-            => Peek(ReadUInt64);
-
-        public ulong[] PeekUInt64s(int count)
-            => Peek(() => ReadUInt64s(count));
-
-        public ulong AssertUInt64(ulong option)
-            => Assert(ReadUInt64(), nameof(UInt64), "0x{0:X}", option);
-
-        public ulong AssertUInt64(ReadOnlySpan<ulong> options)
-            => Assert(ReadUInt64(), nameof(UInt64), "0x{0:X}", options);
-
-        #endregion
-
-        #region Int128
-
         public Int128 ReadInt128()
             => ReadEndian<Int128>(BinaryPrimitives.ReverseEndianness);
-
-        public Int128[] ReadInt128s(int count)
-            => ReadArrayEndian<Int128>(BinaryPrimitives.ReverseEndianness, count);
-
-        public Int128 GetInt128(int position)
-            => Get(ReadInt128, position);
-
-        public Int128[] GetInt128s(int position, int count)
-            => Get(() => ReadInt128s(count), position);
-
-        public Int128 PeekInt128()
-            => Peek(ReadInt128);
-
-        public Int128[] PeekInt128s(int count)
-            => Peek(() => ReadInt128s(count));
-
-        public Int128 AssertInt128(Int128 option)
-            => Assert(ReadInt128(), nameof(Int128), "0x{0:X}", option);
-
-        public Int128 AssertInt128(ReadOnlySpan<Int128> options)
-            => Assert(ReadInt128(), nameof(Int128), "0x{0:X}", options);
-
-        #endregion
-
-        #region UInt128
 
         public UInt128 ReadUInt128()
             => ReadEndian<UInt128>(BinaryPrimitives.ReverseEndianness);
 
-        public UInt128[] ReadUInt128s(int count)
-            => ReadArrayEndian<UInt128>(BinaryPrimitives.ReverseEndianness, count);
-
-        public UInt128 GetUInt128(int position)
-            => Get(ReadUInt128, position);
-
-        public UInt128[] GetUInt128s(int position, int count)
-            => Get(() => ReadUInt128s(count), position);
-
-        public UInt128 PeekUInt128()
-            => Peek(ReadUInt128);
-
-        public UInt128[] PeekUInt128s(int count)
-            => Peek(() => ReadUInt128s(count));
-
-        public UInt128 AssertUInt128(UInt128 option)
-            => Assert(ReadUInt128(), nameof(UInt128), "0x{0:X}", option);
-
-        public UInt128 AssertUInt128(ReadOnlySpan<UInt128> options)
-            => Assert(ReadUInt128(), nameof(UInt128), "0x{0:X}", options);
-
-        #endregion
-
-        #region Half
-
         public Half ReadHalf()
             => ReadEndianConvert<ushort, Half>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt16BitsToHalf);
-
-        public Half[] ReadHalfs(int count)
-            => ReadArrayEndianConvert<ushort, Half>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt16BitsToHalf, count);
-
-        public Half GetHalf(int position)
-            => Get(ReadHalf, position);
-
-        public Half[] GetHalfs(int position, int count)
-            => Get(() => ReadHalfs(count), position);
-
-        public Half PeekHalf()
-            => Peek(ReadHalf);
-
-        public Half[] PeekHalfs(int count)
-            => Peek(() => ReadHalfs(count));
-
-        public Half AssertHalf(Half option)
-            => Assert(ReadHalf(), nameof(Half), "{0}", option);
-
-        public Half AssertHalf(ReadOnlySpan<Half> options)
-            => Assert(ReadHalf(), nameof(Half), "{0}", options);
-
-        #endregion
-
-        #region Single
 
         public float ReadSingle()
             => ReadEndianConvert<uint, float>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt32BitsToSingle);
 
-        public float[] ReadSingles(int count)
-            => ReadArrayEndianConvert<uint, float>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt32BitsToSingle, count);
-
-        public float GetSingle(int position)
-            => Get(ReadSingle, position);
-
-        public float[] GetSingles(int position, int count)
-            => Get(() => ReadSingles(count), position);
-
-        public float PeekSingle()
-            => Peek(ReadSingle);
-
-        public float[] PeekSingles(int count)
-            => Peek(() => ReadSingles(count));
-
-        public float AssertSingle(float option)
-            => Assert(ReadSingle(), nameof(Single), "{0}", option);
-
-        public float AssertSingle(ReadOnlySpan<float> options)
-            => Assert(ReadSingle(), nameof(Single), "{0}", options);
-
-        #endregion
-
-        #region Double
-
         public double ReadDouble()
             => ReadEndianConvert<ulong, double>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt64BitsToDouble);
-
-        public double[] ReadDoubles(int count)
-            => ReadArrayEndianConvert<ulong, double>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt64BitsToDouble, count);
-
-        public double GetDouble(int position)
-            => Get(ReadDouble, position);
-
-        public double[] GetDoubles(int position, int count)
-            => Get(() => ReadDoubles(count), position);
-
-        public double PeekDouble()
-            => Peek(ReadDouble);
-
-        public double[] PeekDoubles(int count)
-            => Peek(() => ReadDoubles(count));
-
-        public double AssertDouble(double option)
-            => Assert(ReadDouble(), nameof(Double), "{0}", option);
-
-        public double AssertDouble(ReadOnlySpan<double> options)
-            => Assert(ReadDouble(), nameof(Double), "{0}", options);
-
-        #endregion
-
-        #region Boolean
 
 #if UNSTRICT_READ_BOOLEAN
         public bool ReadBoolean()
@@ -829,27 +347,268 @@ namespace BinaryMemory
         }
 #endif
 
-        public bool[] ReadBooleans(int count)
-            => ReadArray(ReadBoolean, count);
+        public Vector2 ReadVector2()
+        {
+            if (BigEndian != !BitConverter.IsLittleEndian)
+            {
+                float x = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                float y = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                return new Vector2(x, y);
+            }
 
-        public bool GetBoolean(int position)
-            => Get(ReadBoolean, position);
+            return Read<Vector2>();
+        }
 
-        public bool[] GetBooleans(int position, int count)
-            => Get(() => ReadBooleans(count), position);
+        public Vector3 ReadVector3()
+        {
+            if (BigEndian != !BitConverter.IsLittleEndian)
+            {
+                float x = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                float y = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                float z = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                return new Vector3(x, y, z);
+            }
 
-        public bool PeekBoolean()
-            => Peek(ReadBoolean);
+            return Read<Vector3>();
+        }
 
-        public bool[] PeekBooleans(int count)
-            => Peek(() => ReadBooleans(count));
+        public Vector4 ReadVector4()
+        {
+            if (BigEndian != !BitConverter.IsLittleEndian)
+            {
+                float x = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                float y = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                float z = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                float w = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                return new Vector4(x, y, z, w);
+            }
 
-        public bool AssertBoolean(bool option)
-            => Assert(ReadBoolean(), nameof(Boolean), "{0}", option);
+            return Read<Vector4>();
+        }
 
-        #endregion
+        public Quaternion ReadQuaternion()
+        {
+            if (BigEndian != !BitConverter.IsLittleEndian)
+            {
+                float x = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                float y = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                float z = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                float w = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
+                return new Quaternion(x, y, z, w);
+            }
 
-        #region String
+            return Read<Quaternion>();
+        }
+
+        public byte[] ReadColor3()
+            => ReadBytes(3);
+
+        public Color ReadColorRGB()
+        {
+            var bytes = ReadSpan<byte>(3);
+            return Color.FromArgb(255, bytes[0], bytes[1], bytes[2]);
+        }
+
+        public Color ReadColorBGR()
+        {
+            var bytes = ReadSpan<byte>(3);
+            return Color.FromArgb(255, bytes[2], bytes[1], bytes[0]);
+        }
+
+        public byte[] ReadColor4()
+            => ReadBytes(4);
+
+        public Color ReadColorRGBA()
+        {
+            var bytes = ReadSpan<byte>(4);
+            return Color.FromArgb(bytes[3], bytes[0], bytes[1], bytes[2]);
+        }
+
+        public Color ReadColorBGRA()
+        {
+            var bytes = ReadSpan<byte>(4);
+            return Color.FromArgb(bytes[3], bytes[2], bytes[1], bytes[0]);
+        }
+
+        public Color ReadColorARGB()
+        {
+            var bytes = ReadSpan<byte>(4);
+            return Color.FromArgb(bytes[0], bytes[1], bytes[2], bytes[3]);
+        }
+
+        public Color ReadColorABGR()
+        {
+            var bytes = ReadSpan<byte>(4);
+            return Color.FromArgb(bytes[0], bytes[3], bytes[2], bytes[1]);
+        }
+
+        public TEnum ReadEnumSByte<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, sbyte>(ReadSByte, "0x{0:X}");
+
+        public TEnum ReadEnumByte<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, byte>(ReadByte, "0x{0:X}");
+
+        public TEnum ReadEnumInt16<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, short>(ReadInt16, "0x{0:X}");
+
+        public TEnum ReadEnumUInt16<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, ushort>(ReadUInt16, "0x{0:X}");
+
+        public TEnum ReadEnumInt32<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, int>(ReadInt32, "0x{0:X}");
+
+        public TEnum ReadEnumUInt32<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, uint>(ReadUInt32, "0x{0:X}");
+
+        public TEnum ReadEnumInt64<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, long>(ReadInt64, "0x{0:X}");
+
+        public TEnum ReadEnumUInt64<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, ulong>(ReadUInt64, "0x{0:X}");
+
+        public TEnum ReadEnum<TEnum>() where TEnum : Enum
+        {
+            Type type = Enum.GetUnderlyingType(typeof(TEnum));
+            if (type == typeof(sbyte))
+            {
+                return ReadEnumSByte<TEnum>();
+            }
+            else if (type == typeof(byte))
+            {
+                return ReadEnumByte<TEnum>();
+            }
+            else if (type == typeof(short))
+            {
+                return ReadEnumInt16<TEnum>();
+            }
+            else if (type == typeof(ushort))
+            {
+                return ReadEnumUInt16<TEnum>();
+            }
+            else if (type == typeof(int))
+            {
+                return ReadEnumInt32<TEnum>();
+            }
+            else if (type == typeof(uint))
+            {
+                return ReadEnumUInt32<TEnum>();
+            }
+            else if (type == typeof(long))
+            {
+                return ReadEnumInt64<TEnum>();
+            }
+            else if (type == typeof(ulong))
+            {
+                return ReadEnumUInt64<TEnum>();
+            }
+            else
+            {
+                throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an unknown underlying value type: {type.Name}");
+            }
+        }
+
+        public TEnum ReadEnum8<TEnum>() where TEnum : Enum
+        {
+            Type type = Enum.GetUnderlyingType(typeof(TEnum));
+            if (type == typeof(sbyte))
+            {
+                return ReadEnumSByte<TEnum>();
+            }
+            else if (type == typeof(byte))
+            {
+                return ReadEnumByte<TEnum>();
+            }
+            else
+            {
+                throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an invalid underlying value type: {type.Name}");
+            }
+        }
+
+        public TEnum ReadEnum16<TEnum>() where TEnum : Enum
+        {
+            Type type = Enum.GetUnderlyingType(typeof(TEnum));
+            if (type == typeof(short))
+            {
+                return ReadEnumInt16<TEnum>();
+            }
+            else if (type == typeof(ushort))
+            {
+                return ReadEnumUInt16<TEnum>();
+            }
+            else
+            {
+                throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an invalid underlying value type: {type.Name}");
+            }
+        }
+
+        public TEnum ReadEnum32<TEnum>() where TEnum : Enum
+        {
+            Type type = Enum.GetUnderlyingType(typeof(TEnum));
+            if (type == typeof(int))
+            {
+                return ReadEnumInt32<TEnum>();
+            }
+            else if (type == typeof(uint))
+            {
+                return ReadEnumUInt32<TEnum>();
+            }
+            else
+            {
+                throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an invalid underlying value type: {type.Name}");
+            }
+        }
+
+        public TEnum ReadEnum64<TEnum>() where TEnum : Enum
+        {
+            Type type = Enum.GetUnderlyingType(typeof(TEnum));
+            if (type == typeof(long))
+            {
+                return ReadEnumInt64<TEnum>();
+            }
+            else if (type == typeof(ulong))
+            {
+                return ReadEnumUInt64<TEnum>();
+            }
+            else
+            {
+                throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an invalid underlying value type: {type.Name}");
+            }
+        }
+
+        public long ReadSignedVarVal()
+        {
+            return VariableValueSize switch
+            {
+                1 => ReadSByte(),
+                2 => ReadInt16(),
+                4 => ReadInt32(),
+                8 => ReadInt64(),
+                _ => throw new NotSupportedException($"{nameof(VariableValueSize)} {VariableValueSize} is not supported for {nameof(ReadSignedVarVal)}"),
+            };
+        }
+
+        public ulong ReadUnsignedVarVal()
+        {
+            return VariableValueSize switch
+            {
+                1 => ReadByte(),
+                2 => ReadUInt16(),
+                4 => ReadUInt32(),
+                8 => ReadUInt64(),
+                _ => throw new NotSupportedException($"{nameof(VariableValueSize)} {VariableValueSize} is not supported for {nameof(ReadUnsignedVarVal)}"),
+            };
+        }
+
+        public double ReadPreciseVarVal()
+        {
+            return VariableValueSize switch
+            {
+                2 => (double)ReadHalf(),
+                4 => ReadSingle(),
+                8 => ReadDouble(),
+                _ => throw new NotSupportedException($"{nameof(VariableValueSize)} {VariableValueSize} is not supported for {nameof(ReadPreciseVarVal)}"),
+            };
+        }
 
         public string ReadUTF8()
             => Encoding.UTF8.GetString(Read8BitTerminatedStringBytes());
@@ -923,77 +682,313 @@ namespace BinaryMemory
         public string ReadUTF32BigEndian(int length)
             => EncodingHelper.UTF32BE.GetString(ReadBytes(length * 4));
 
-        public string GetUTF8(int position)
+        #endregion
+
+        #region Get
+
+        private T Get<T>(Func<T> read, long position)
+        {
+            int returnPosition = _position;
+            Position = position;
+            T value = read();
+            _position = returnPosition;
+            return value;
+        }
+
+        private T GetFixedString<T>(Func<int, T> readFixedString, long position, int length)
+        {
+            int returnPosition = _position;
+            Position = position;
+            T value = readFixedString(length);
+            _position = returnPosition;
+            return value;
+        }
+
+        public T Get<T>(long position) where T : unmanaged
+        {
+            int returnPosition = _position;
+            Position = position;
+            var value = Read<T>();
+            _position = returnPosition;
+            return value;
+        }
+
+        public sbyte GetSByte(long position)
+            => Get<sbyte>(position);
+
+        public byte GetByte(long position)
+            => Get<byte>(position);
+
+        public short GetInt16(long position)
+            => Get(ReadInt16, position);
+
+        public ushort GetUInt16(long position)
+            => Get(ReadUInt16, position);
+
+        public int GetInt32(long position)
+            => Get(ReadInt32, position);
+
+        public uint GetUInt32(long position)
+            => Get(ReadUInt32, position);
+
+        public long GetInt64(long position)
+            => Get(ReadInt64, position);
+
+        public ulong GetUInt64(long position)
+            => Get(ReadUInt64, position);
+
+        public Int128 GetInt128(long position)
+            => Get(ReadInt128, position);
+
+        public UInt128 GetUInt128(long position)
+            => Get(ReadUInt128, position);
+
+        public Half GetHalf(long position)
+            => Get(ReadHalf, position);
+
+        public float GetSingle(long position)
+            => Get(ReadSingle, position);
+
+        public double GetDouble(long position)
+            => Get(ReadDouble, position);
+
+        public bool GetBoolean(long position)
+            => Get(ReadBoolean, position);
+
+        public Vector2 GetVector2(long position)
+            => Get(ReadVector2, position);
+
+        public Vector3 GetVector3(long position)
+            => Get(ReadVector3, position);
+
+        public Vector4 GetVector4(long position)
+            => Get(ReadVector4, position);
+
+        public Quaternion GetQuaternion(long position)
+            => Get(ReadQuaternion, position);
+
+        public byte[] GetColor3(long position)
+            => Get(ReadColor3, position);
+
+        public Color GetColorRGB(long position)
+            => Get(ReadColorRGB, position);
+
+        public Color GetColorBGR(long position)
+            => Get(ReadColorBGR, position);
+
+        public byte[] GetColor4(long position)
+            => Get(ReadColor4, position);
+
+        public Color GetColorRGBA(long position)
+            => Get(ReadColorRGBA, position);
+
+        public Color GetColorBGRA(long position)
+            => Get(ReadColorBGRA, position);
+
+        public Color GetColorARGB(long position)
+            => Get(ReadColorARGB, position);
+
+        public Color GetColorABGR(long position)
+            => Get(ReadColorABGR, position);
+
+        public long GetSignedVarVal(long position)
+            => Get(ReadSignedVarVal, position);
+
+        public ulong GetUnsignedVarVal(long position)
+            => Get(ReadUnsignedVarVal, position);
+
+        public double GetPreciseVarVal(long position)
+            => Get(ReadPreciseVarVal, position);
+
+        public string GetUTF8(long position)
             => Get(ReadUTF8, position);
 
-        public string GetASCII(int position)
+        public string GetASCII(long position)
             => Get(ReadASCII, position);
 
-        public string GetShiftJIS(int position)
+        public string GetShiftJIS(long position)
             => Get(ReadShiftJIS, position);
 
-        public string GetEucJP(int position)
+        public string GetEucJP(long position)
             => Get(ReadEucJP, position);
 
-        public string GetEucCN(int position)
+        public string GetEucCN(long position)
             => Get(ReadEucCN, position);
 
-        public string GetEucKR(int position)
+        public string GetEucKR(long position)
             => Get(ReadEucKR, position);
 
-        public string GetUTF16(int position)
+        public string GetUTF16(long position)
             => Get(ReadUTF16, position);
 
-        public string GetUTF16LittleEndian(int position)
+        public string GetUTF16LittleEndian(long position)
             => Get(ReadUTF16LittleEndian, position);
 
-        public string GetUTF16BigEndian(int position)
+        public string GetUTF16BigEndian(long position)
             => Get(ReadUTF16BigEndian, position);
 
-        public string GetUTF32(int position)
+        public string GetUTF32(long position)
             => Get(ReadUTF32, position);
 
-        public string GetUTF32LittleEndian(int position)
+        public string GetUTF32LittleEndian(long position)
             => Get(ReadUTF32LittleEndian, position);
 
-        public string GetUTF32BigEndian(int position)
+        public string GetUTF32BigEndian(long position)
             => Get(ReadUTF32BigEndian, position);
 
-        public string GetUTF8(int position, int length)
-            => Get(() => ReadUTF8(length), position);
+        public string GetUTF8(long position, int length)
+            => GetFixedString(ReadUTF8, position, length);
 
-        public string GetASCII(int position, int length)
-            => Get(() => ReadASCII(length), position);
+        public string GetASCII(long position, int length)
+            => GetFixedString(ReadASCII, position, length);
 
-        public string GetShiftJIS(int position, int length)
-            => Get(() => ReadShiftJIS(length), position);
+        public string GetShiftJIS(long position, int length)
+            => GetFixedString(ReadShiftJIS, position, length);
 
-        public string GetEucJP(int position, int length)
-            => Get(() => ReadEucJP(length), position);
+        public string GetEucJP(long position, int length)
+            => GetFixedString(ReadEucJP, position, length);
 
-        public string GetEucCN(int position, int length)
-            => Get(() => ReadEucCN(length), position);
+        public string GetEucCN(long position, int length)
+            => GetFixedString(ReadEucCN, position, length);
 
-        public string GetEucKR(int position, int length)
-            => Get(() => ReadEucKR(length), position);
+        public string GetEucKR(long position, int length)
+            => GetFixedString(ReadEucKR, position, length);
 
-        public string GetUTF16(int position, int length)
-            => Get(() => ReadUTF16(length), position);
+        public string GetUTF16(long position, int length)
+            => GetFixedString(ReadUTF16, position, length);
 
-        public string GetUTF16LittleEndian(int position, int length)
-            => Get(() => ReadUTF16LittleEndian(length), position);
+        public string GetUTF16LittleEndian(long position, int length)
+            => GetFixedString(ReadUTF16LittleEndian, position, length);
 
-        public string GetUTF16BigEndian(int position, int length)
-            => Get(() => ReadUTF16BigEndian(length), position);
+        public string GetUTF16BigEndian(long position, int length)
+            => GetFixedString(ReadUTF16BigEndian, position, length);
 
-        public string GetUTF32(int position, int length)
-            => Get(() => ReadUTF32(length), position);
+        public string GetUTF32(long position, int length)
+            => GetFixedString(ReadUTF32, position, length);
 
-        public string GetUTF32LittleEndian(int position, int length)
-            => Get(() => ReadUTF32LittleEndian(length), position);
+        public string GetUTF32LittleEndian(long position, int length)
+            => GetFixedString(ReadUTF32LittleEndian, position, length);
 
-        public string GetUTF32BigEndian(int position, int length)
-            => Get(() => ReadUTF32BigEndian(length), position);
+        public string GetUTF32BigEndian(long position, int length)
+            => GetFixedString(ReadUTF32BigEndian, position, length);
+
+        #endregion
+
+        #region Peek
+
+        private T Peek<T>(Func<T> read)
+        {
+            int startPosition = _position;
+            T value = read();
+            _position = startPosition;
+            return value;
+        }
+
+        private T PeekFixedString<T>(Func<int, T> readFixedString, int length)
+        {
+            int returnPosition = _position;
+            T value = readFixedString(length);
+            _position = returnPosition;
+            return value;
+        }
+
+        public unsafe T Peek<T>() where T : unmanaged
+        {
+            int size = sizeof(T);
+            if ((_position + size) > _length)
+            {
+                throw new InvalidOperationException("Cannot read beyond the specified region of memory.");
+            }
+
+            return Unsafe.ReadUnaligned<T>(ref Unsafe.Add(ref MemoryMarshal.GetReference(_memory.Span), _position));
+        }
+
+        public sbyte PeekSByte()
+            => Peek<sbyte>();
+
+        public byte PeekByte()
+            => Peek<byte>();
+
+        public short PeekInt16()
+            => Peek(ReadInt16);
+
+        public ushort PeekUInt16()
+            => Peek(ReadUInt16);
+
+        public int PeekInt32()
+            => Peek(ReadInt32);
+
+        public uint PeekUInt32()
+            => Peek(ReadUInt32);
+
+        public long PeekInt64()
+            => Peek(ReadInt64);
+
+        public ulong PeekUInt64()
+            => Peek(ReadUInt64);
+
+        public Int128 PeekInt128()
+            => Peek(ReadInt128);
+
+        public UInt128 PeekUInt128()
+            => Peek(ReadUInt128);
+
+        public Half PeekHalf()
+            => Peek(ReadHalf);
+
+        public float PeekSingle()
+            => Peek(ReadSingle);
+
+        public double PeekDouble()
+            => Peek(ReadDouble);
+
+        public bool PeekBoolean()
+            => Peek(ReadBoolean);
+
+        public Vector2 PeekVector2()
+            => Peek(ReadVector2);
+
+        public Vector3 PeekVector3()
+            => Peek(ReadVector3);
+
+        public Vector4 PeekVector4()
+            => Peek(ReadVector4);
+
+        public Quaternion PeekQuaternion()
+            => Peek(ReadQuaternion);
+
+        public byte[] PeekColor3()
+            => Peek(ReadColor3);
+
+        public Color PeekColorRGB()
+            => Peek(ReadColorRGB);
+
+        public Color PeekColorBGR()
+            => Peek(ReadColorBGR);
+
+        public byte[] PeekColor4()
+            => Peek(ReadColor4);
+
+        public Color PeekColorRGBA()
+            => Peek(ReadColorRGBA);
+
+        public Color PeekColorBGRA()
+            => Peek(ReadColorBGRA);
+
+        public Color PeekColorARGB()
+            => Peek(ReadColorARGB);
+
+        public Color PeekColorABGR()
+            => Peek(ReadColorABGR);
+
+        public long PeekVarValSigned()
+            => Peek(ReadSignedVarVal);
+
+        public ulong PeekVarValUnsigned()
+            => Peek(ReadUnsignedVarVal);
+
+        public double PeekVarValPrecise()
+            => Peek(ReadPreciseVarVal);
 
         public string PeekUTF8()
             => Peek(ReadUTF8);
@@ -1032,40 +1027,188 @@ namespace BinaryMemory
             => Peek(ReadUTF32BigEndian);
 
         public string PeekUTF8(int length)
-            => Peek(() => ReadUTF8(length));
+            => PeekFixedString(ReadUTF8, length);
 
         public string PeekASCII(int length)
-            => Peek(() => ReadASCII(length));
+            => PeekFixedString(ReadASCII, length);
 
         public string PeekShiftJIS(int length)
-            => Peek(() => ReadShiftJIS(length));
+            => PeekFixedString(ReadShiftJIS, length);
 
         public string PeekEucJP(int length)
-            => Peek(() => ReadEucJP(length));
+            => PeekFixedString(ReadEucJP, length);
 
         public string PeekEucCN(int length)
-            => Peek(() => ReadEucCN(length));
+            => PeekFixedString(ReadEucCN, length);
 
         public string PeekEucKR(int length)
-            => Peek(() => ReadEucKR(length));
+            => PeekFixedString(ReadEucKR, length);
 
         public string PeekUTF16(int length)
-            => Peek(() => ReadUTF16(length));
+            => PeekFixedString(ReadUTF16, length);
 
         public string PeekUTF16LittleEndian(int length)
-            => Peek(() => ReadUTF16LittleEndian(length));
+            => PeekFixedString(ReadUTF16LittleEndian, length);
 
         public string PeekUTF16BigEndian(int length)
-            => Peek(() => ReadUTF16BigEndian(length));
+            => PeekFixedString(ReadUTF16BigEndian, length);
 
         public string PeekUTF32(int length)
-            => Peek(() => ReadUTF32(length));
+            => PeekFixedString(ReadUTF32, length);
 
         public string PeekUTF32LittleEndian(int length)
-            => Peek(() => ReadUTF32LittleEndian(length));
+            => PeekFixedString(ReadUTF32LittleEndian, length);
 
         public string PeekUTF32BigEndian(int length)
-            => Peek(() => ReadUTF32BigEndian(length));
+            => PeekFixedString(ReadUTF32BigEndian, length);
+
+        #endregion
+
+        #region Assert
+
+        private T Assert<T>(T value, string typeName, string valueFormat, T option) where T : IEquatable<T>
+        {
+            if (value.Equals(option))
+            {
+                return value;
+            }
+
+            string strValue = string.Format(valueFormat, value);
+            string strOption = string.Format(valueFormat, option);
+            throw new InvalidDataException($"Read {typeName}: {strValue} | Expected: {strOption} | Ending position: 0x{_position:X}");
+        }
+
+        private T Assert<T>(T value, string typeName, string valueFormat, ReadOnlySpan<T> options) where T : IEquatable<T>
+        {
+            foreach (T option in options)
+            {
+                if (value.Equals(option))
+                {
+                    return value;
+                }
+            }
+
+            string strValue = string.Format(valueFormat, value);
+            string strOptions = string.Join(", ", options.ToArray().Select(o => string.Format(valueFormat, o)));
+            throw new InvalidDataException($"Read {typeName}: {strValue} | Expected: {strOptions} | Ending position: 0x{_position:X}");
+        }
+
+        private string AssertString(string value, string encodingName, string option)
+        {
+            if (value.Equals(option))
+            {
+                return value;
+            }
+
+            throw new InvalidDataException($"Read {encodingName}: {value} | Expected: {option} | Ending position: 0x{_position:X}");
+        }
+
+        private string AssertString(string value, string encodingName, ReadOnlySpan<string> options)
+        {
+            foreach (string option in options)
+            {
+                if (value.Equals(option))
+                {
+                    return value;
+                }
+            }
+
+            string joinedOptions = string.Join(", ", options.ToArray());
+            throw new InvalidDataException($"Read {encodingName}: {value} | Expected: {joinedOptions} | Ending position: 0x{_position:X}");
+        }
+
+        public void AssertBytePattern(int length, byte pattern)
+        {
+            byte[] bytes = ReadBytes(length);
+            for (int i = 0; i < length; i++)
+            {
+                if (bytes[i] != pattern)
+                {
+                    throw new InvalidDataException($"Read {bytes[i]:X2} at position {i} | Expected {length} 0x{pattern:X2}");
+                }
+            }
+        }
+
+        public sbyte AssertSByte(sbyte option)
+            => Assert(ReadSByte(), nameof(SByte), "0x{0:X}", option);
+
+        public sbyte AssertSByte(ReadOnlySpan<sbyte> options)
+            => Assert(ReadSByte(), nameof(SByte), "0x{0:X}", options);
+
+        public byte AssertByte(byte option)
+            => Assert(ReadByte(), nameof(Byte), "0x{0:X}", option);
+
+        public byte AssertByte(ReadOnlySpan<byte> options)
+            => Assert(ReadByte(), nameof(Byte), "0x{0:X}", options);
+
+        public short AssertInt16(short option)
+            => Assert(ReadInt16(), nameof(Int16), "0x{0:X}", option);
+
+        public short AssertInt16(ReadOnlySpan<short> options)
+            => Assert(ReadInt16(), nameof(Int16), "0x{0:X}", options);
+
+        public ushort AssertUInt16(ushort option)
+            => Assert(ReadUInt16(), nameof(UInt16), "0x{0:X}", option);
+
+        public ushort AssertUInt16(ReadOnlySpan<ushort> options)
+            => Assert(ReadUInt16(), nameof(UInt16), "0x{0:X}", options);
+
+        public int AssertInt32(int option)
+            => Assert(ReadInt32(), nameof(Int32), "0x{0:X}", option);
+
+        public int AssertInt32(ReadOnlySpan<int> options)
+            => Assert(ReadInt32(), nameof(Int32), "0x{0:X}", options);
+
+        public long AssertInt64(long option)
+            => Assert(ReadInt64(), nameof(Int64), "0x{0:X}", option);
+
+        public long AssertInt64(ReadOnlySpan<long> options)
+            => Assert(ReadInt64(), nameof(Int64), "0x{0:X}", options);
+
+        public uint AssertUInt32(uint option)
+            => Assert(ReadUInt32(), nameof(UInt32), "0x{0:X}", option);
+
+        public uint AssertUInt32(ReadOnlySpan<uint> options)
+            => Assert(ReadUInt32(), nameof(UInt32), "0x{0:X}", options);
+
+        public ulong AssertUInt64(ulong option)
+            => Assert(ReadUInt64(), nameof(UInt64), "0x{0:X}", option);
+
+        public ulong AssertUInt64(ReadOnlySpan<ulong> options)
+            => Assert(ReadUInt64(), nameof(UInt64), "0x{0:X}", options);
+
+        public Int128 AssertInt128(Int128 option)
+            => Assert(ReadInt128(), nameof(Int128), "0x{0:X}", option);
+
+        public Int128 AssertInt128(ReadOnlySpan<Int128> options)
+            => Assert(ReadInt128(), nameof(Int128), "0x{0:X}", options);
+
+        public UInt128 AssertUInt128(UInt128 option)
+            => Assert(ReadUInt128(), nameof(UInt128), "0x{0:X}", option);
+
+        public UInt128 AssertUInt128(ReadOnlySpan<UInt128> options)
+            => Assert(ReadUInt128(), nameof(UInt128), "0x{0:X}", options);
+
+        public Half AssertHalf(Half option)
+            => Assert(ReadHalf(), nameof(Half), "{0}", option);
+
+        public Half AssertHalf(ReadOnlySpan<Half> options)
+            => Assert(ReadHalf(), nameof(Half), "{0}", options);
+
+        public float AssertSingle(float option)
+            => Assert(ReadSingle(), nameof(Single), "{0}", option);
+
+        public float AssertSingle(ReadOnlySpan<float> options)
+            => Assert(ReadSingle(), nameof(Single), "{0}", options);
+
+        public double AssertDouble(double option)
+            => Assert(ReadDouble(), nameof(Double), "{0}", option);
+
+        public double AssertDouble(ReadOnlySpan<double> options)
+            => Assert(ReadDouble(), nameof(Double), "{0}", options);
+
+        public bool AssertBoolean(bool option)
+            => Assert(ReadBoolean(), nameof(Boolean), "{0}", option);
 
         public string AssertUTF8(string option)
             => AssertString(ReadUTF8(option.Length), "UTF8", option);
@@ -1139,99 +1282,173 @@ namespace BinaryMemory
         public string AssertUTF32BigEndian(int length, ReadOnlySpan<string> options)
             => AssertString(ReadUTF32BigEndian(length), "UTF32BigEndian", options);
 
-        #region String Termination
+        public long AssertVarValSigned(long option)
+            => Assert(ReadSignedVarVal(), $"VarValS{VariableValueSize}", "0x{0:X}", option);
 
-        protected byte[] Read8BitTerminatedStringBytes()
-        {
-            var bytes = new List<byte>();
-            byte b = ReadByte();
-            while (b != 0)
-            {
-                bytes.Add(b);
-                b = ReadByte();
-            }
-            return [.. bytes];
-        }
+        public long AssertVarValSigned(ReadOnlySpan<long> options)
+            => Assert(ReadSignedVarVal(), $"VarValS{VariableValueSize}", "0x{0:X}", options);
 
-        protected byte[] Read16BitTerminatedStringBytes()
-        {
-            var bytes = new List<byte>();
-            byte a = ReadByte();
-            byte b = ReadByte();
-            while ((a | b) != 0)
-            {
-                bytes.Add(a);
-                bytes.Add(b);
-                a = ReadByte();
-                b = ReadByte();
-            }
-            return [.. bytes];
-        }
+        public ulong AssertVarValUnsigned(ulong option)
+            => Assert(ReadUnsignedVarVal(), $"VarValU{VariableValueSize}", "0x{0:X}", option);
 
-        protected byte[] Read32BitTerminatedStringBytes()
-        {
-            var bytes = new List<byte>();
-            byte a = ReadByte();
-            byte b = ReadByte();
-            byte c = ReadByte();
-            byte d = ReadByte();
-            while ((a | b | c | d) != 0)
-            {
-                bytes.Add(a);
-                bytes.Add(b);
-                bytes.Add(c);
-                bytes.Add(d);
-                a = ReadByte();
-                b = ReadByte();
-                c = ReadByte();
-                d = ReadByte();
-            }
-            return [.. bytes];
-        }
+        public ulong AssertVarValUnsigned(ReadOnlySpan<ulong> options)
+            => Assert(ReadUnsignedVarVal(), $"VarValU{VariableValueSize}", "0x{0:X}", options);
 
-        protected byte[] ReadTerminatedStringBytes(int bytesPerChar)
-        {
-            var bytes = new List<byte>();
-            byte[] readBytes = ReadBytes(bytesPerChar);
+        public double AssertVarValPrecise(double option)
+            => Assert(ReadUnsignedVarVal(), $"VarValF{VariableValueSize}", "0x{0:X}", option);
 
-            bool IsNull()
-            {
-                foreach (byte b in readBytes)
-                {
-                    if (b != 0)
-                    {
-                        return false;
-                    }
-                }
-                return true;
-            }
-
-            while (!IsNull())
-            {
-                bytes.AddRange(readBytes);
-                readBytes = ReadBytes(bytesPerChar);
-            }
-
-            return bytes.ToArray();
-        }
+        public double AssertVarValPrecise(ReadOnlySpan<double> options)
+            => Assert(ReadUnsignedVarVal(), $"VarValF{VariableValueSize}", "0x{0:X}", options);
 
         #endregion
 
-        #endregion
+        #region Read Array
 
-        #region Vector2
+        private static T[] ReadArray<T>(Func<T> read, int count) where T : unmanaged
+        {
+            var values = new T[count];
+            for (int i = 0; i < count; i++)
+            {
+                values[i] = read();
+            }
+            return values;
+        }
 
-        public Vector2 ReadVector2()
+        private T[] ReadArrayEndian<T>(Func<T, T> reverseEndianness, int count) where T : unmanaged
         {
             if (BigEndian != !BitConverter.IsLittleEndian)
             {
-                float x = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                float y = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                return new Vector2(x, y);
+                var values = new T[count];
+                for (int i = 0; i < count; i++)
+                {
+                    values[i] = reverseEndianness(Read<T>());
+                }
+                return values;
             }
 
-            return Read<Vector2>();
+            return ReadArray<T>(count);
         }
+
+        private TTo[] ReadArrayCast<TFrom, TTo>(Func<TFrom, TTo> cast, int count)
+            where TFrom : unmanaged
+            where TTo : unmanaged
+        {
+            var values = new TTo[count];
+            for (int i = 0; i < count; i++)
+            {
+                values[i] = cast(Read<TFrom>());
+            }
+            return values;
+        }
+
+        private TTo[] ReadArrayEndianConvert<TFrom, TTo>(Func<TFrom, TFrom> reverseEndianness, Func<TFrom, TTo> convert, int count)
+            where TFrom : unmanaged
+            where TTo : unmanaged
+        {
+            if (BigEndian != !BitConverter.IsLittleEndian)
+            {
+                var values = new TTo[count];
+                for (int i = 0; i < count; i++)
+                {
+                    values[i] = convert(reverseEndianness(Read<TFrom>()));
+                }
+                return values;
+            }
+
+            return ReadArray<TTo>(count);
+        }
+
+        private TTo[] ReadArrayEndianCast<TFrom, TTo>(Func<TFrom, TFrom> reverseEndianness, Func<TFrom, TTo> cast, int count)
+            where TFrom : unmanaged
+            where TTo : unmanaged
+        {
+            var values = new TTo[count];
+            if (BigEndian != !BitConverter.IsLittleEndian)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    values[i] = cast(reverseEndianness(Read<TFrom>()));
+                }
+            }
+            else
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    values[i] = cast(Read<TFrom>());
+                }
+            }
+
+            return values;
+        }
+
+        private TTo[] ReadArrayEndianConvertCast<TRead, TFrom, TTo>(Func<TRead, TRead> reverseEndianness, Func<TRead, TFrom> convert, Func<TFrom, TTo> cast, int count)
+            where TRead : unmanaged
+            where TFrom : unmanaged
+            where TTo : unmanaged
+        {
+            var values = new TTo[count];
+            if (BigEndian != !BitConverter.IsLittleEndian)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    values[i] = cast(convert(reverseEndianness(Read<TRead>())));
+                }
+            }
+            else
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    values[i] = cast(convert(Read<TRead>()));
+                }
+            }
+
+            return values;
+        }
+
+        public unsafe T[] ReadArray<T>(int count) where T : unmanaged
+            => ReadSpan<T>(count).ToArray();
+
+        public sbyte[] ReadSBytes(int count)
+            => ReadArray<sbyte>(count);
+
+        public byte[] ReadBytes(int count)
+            => ReadArray<byte>(count);
+
+        public short[] ReadInt16s(int count)
+            => ReadArrayEndian<short>(BinaryPrimitives.ReverseEndianness, count);
+
+        public ushort[] ReadUInt16s(int count)
+            => ReadArrayEndian<ushort>(BinaryPrimitives.ReverseEndianness, count);
+
+        public int[] ReadInt32s(int count)
+            => ReadArrayEndian<int>(BinaryPrimitives.ReverseEndianness, count);
+
+        public uint[] ReadUInt32s(int count)
+            => ReadArrayEndian<uint>(BinaryPrimitives.ReverseEndianness, count);
+
+        public long[] ReadInt64s(int count)
+            => ReadArrayEndian<long>(BinaryPrimitives.ReverseEndianness, count);
+
+        public ulong[] ReadUInt64s(int count)
+            => ReadArrayEndian<ulong>(BinaryPrimitives.ReverseEndianness, count);
+
+        public Int128[] ReadInt128s(int count)
+            => ReadArrayEndian<Int128>(BinaryPrimitives.ReverseEndianness, count);
+
+        public UInt128[] ReadUInt128s(int count)
+            => ReadArrayEndian<UInt128>(BinaryPrimitives.ReverseEndianness, count);
+
+        public Half[] ReadHalfs(int count)
+            => ReadArrayEndianConvert<ushort, Half>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt16BitsToHalf, count);
+
+        public float[] ReadSingles(int count)
+            => ReadArrayEndianConvert<uint, float>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt32BitsToSingle, count);
+
+        public double[] ReadDoubles(int count)
+            => ReadArrayEndianConvert<ulong, double>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt64BitsToDouble, count);
+
+        public bool[] ReadBooleans(int count)
+            => ReadArray(ReadBoolean, count);
 
         public Vector2[] ReadVector2s(int count)
         {
@@ -1251,35 +1468,6 @@ namespace BinaryMemory
             }
 
             return ReadArray<Vector2>(count);
-        }
-
-        public Vector2 GetVector2(int position)
-            => Get(ReadVector2, position);
-
-        public Vector2[] GetVector2s(int position, int count)
-            => Get(() => ReadVector2s(count), position);
-
-        public Vector2 PeekVector2()
-            => Peek(ReadVector2);
-
-        public Vector2[] PeekVector2s(int count)
-            => Peek(() => ReadVector2s(count));
-
-        #endregion
-
-        #region Vector3
-
-        public Vector3 ReadVector3()
-        {
-            if (BigEndian != !BitConverter.IsLittleEndian)
-            {
-                float x = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                float y = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                float z = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                return new Vector3(x, y, z);
-            }
-
-            return Read<Vector3>();
         }
 
         public Vector3[] ReadVector3s(int count)
@@ -1302,36 +1490,6 @@ namespace BinaryMemory
             return ReadArray<Vector3>(count);
         }
 
-        public Vector3 GetVector3(int position)
-            => Get(ReadVector3, position);
-
-        public Vector3[] GetVector3s(int position, int count)
-            => Get(() => ReadVector3s(count), position);
-
-        public Vector3 PeekVector3()
-            => Peek(ReadVector3);
-
-        public Vector3[] PeekVector3s(int count)
-            => Peek(() => ReadVector3s(count));
-
-        #endregion
-
-        #region Vector4
-
-        public Vector4 ReadVector4()
-        {
-            if (BigEndian != !BitConverter.IsLittleEndian)
-            {
-                float x = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                float y = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                float z = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                float w = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                return new Vector4(x, y, z, w);
-            }
-
-            return Read<Vector4>();
-        }
-
         public Vector4[] ReadVector4s(int count)
         {
             // Prevent checking endianness for every component that needs to be read
@@ -1350,36 +1508,6 @@ namespace BinaryMemory
             }
 
             return ReadArray<Vector4>(count);
-        }
-
-        public Vector4 GetVector4(int position)
-            => Get(ReadVector4, position);
-
-        public Vector4[] GetVector4s(int position, int count)
-            => Get(() => ReadVector4s(count), position);
-
-        public Vector4 PeekVector4()
-            => Peek(ReadVector4);
-
-        public Vector4[] PeekVector4s(int count)
-            => Peek(() => ReadVector4s(count));
-
-        #endregion
-
-        #region Quaternion
-
-        public Quaternion ReadQuaternion()
-        {
-            if (BigEndian != !BitConverter.IsLittleEndian)
-            {
-                float x = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                float y = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                float z = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                float w = BitConverter.UInt32BitsToSingle(BinaryPrimitives.ReverseEndianness(Read<uint>()));
-                return new Quaternion(x, y, z, w);
-            }
-
-            return Read<Quaternion>();
         }
 
         public Quaternion[] ReadQuaternions(int count)
@@ -1402,370 +1530,260 @@ namespace BinaryMemory
             return ReadArray<Quaternion>(count);
         }
 
-        public Quaternion GetQuaternion(int position)
-            => Get(ReadQuaternion, position);
-
-        public Quaternion[] GetQuaternions(int position, int count)
-            => Get(() => ReadQuaternions(count), position);
-
-        public Quaternion PeekQuaternion()
-            => Peek(ReadQuaternion);
-
-        public Quaternion[] PeekQuaternions(int count)
-            => Peek(() => ReadQuaternions(count));
-
-        #endregion
-
-        #region Color3
-
-        public byte[] ReadColor3Raw()
-            => ReadBytes(3);
-
-        public Color ReadColorRGB()
-        {
-            var bytes = ReadSpan<byte>(3);
-            return Color.FromArgb(255, bytes[0], bytes[1], bytes[2]);
-        }
-
-        public Color ReadColorBGR()
-        {
-            var bytes = ReadSpan<byte>(3);
-            return Color.FromArgb(255, bytes[2], bytes[1], bytes[0]);
-        }
-
-        public byte[] GetColor3Raw(int position)
-            => Get(ReadColor3Raw, position);
-
-        public Color GetColorRGB(int position)
-            => Get(ReadColorRGB, position);
-
-        public Color GetColorBGR(int position)
-            => Get(ReadColorBGR, position);
-
-        public byte[] PeekColor3Raw()
-            => Peek(ReadColor3Raw);
-
-        public Color PeekColorRGB()
-            => Peek(ReadColorRGB);
-
-        public Color PeekColorBGR()
-            => Peek(ReadColorBGR);
-
-        #endregion
-
-        #region Color4
-
-        public byte[] ReadColor4Raw()
-            => ReadBytes(4);
-
-        public Color ReadColorRGBA()
-        {
-            var bytes = ReadSpan<byte>(4);
-            return Color.FromArgb(bytes[3], bytes[0], bytes[1], bytes[2]);
-        }
-
-        public Color ReadColorBGRA()
-        {
-            var bytes = ReadSpan<byte>(4);
-            return Color.FromArgb(bytes[3], bytes[2], bytes[1], bytes[0]);
-        }
-
-        public Color ReadColorARGB()
-        {
-            var bytes = ReadSpan<byte>(4);
-            return Color.FromArgb(bytes[0], bytes[1], bytes[2], bytes[3]);
-        }
-
-        public Color ReadColorABGR()
-        {
-            var bytes = ReadSpan<byte>(4);
-            return Color.FromArgb(bytes[0], bytes[3], bytes[2], bytes[1]);
-        }
-
-        public byte[] GetColor4Raw(int position)
-            => Get(ReadColor4Raw, position);
-
-        public Color GetColorRGBA(int position)
-            => Get(ReadColorRGBA, position);
-
-        public Color GetColorBGRA(int position)
-            => Get(ReadColorBGRA, position);
-
-        public Color GetColorARGB(int position)
-            => Get(ReadColorARGB, position);
-
-        public Color GetColorABGR(int position)
-            => Get(ReadColorABGR, position);
-
-        public byte[] PeekColor4Raw()
-            => Peek(ReadColor4Raw);
-
-        public Color PeekColorRGBA()
-            => Peek(ReadColorRGBA);
-
-        public Color PeekColorBGRA()
-            => Peek(ReadColorBGRA);
-
-        public Color PeekColorARGB()
-            => Peek(ReadColorARGB);
-
-        public Color PeekColorABGR()
-            => Peek(ReadColorABGR);
-
-        #endregion
-
-        #region Enum
-
-        private static TEnum ReadEnum<TEnum, TValue>(Func<TValue> read, string valueFormat)
-            where TEnum : Enum
-            where TValue : notnull
-        {
-            TValue value = read();
-            if (!Enum.IsDefined(typeof(TEnum), value))
-            {
-                throw new InvalidDataException($"Read value not present in enum: {string.Format(valueFormat, value)}");
-            }
-            return (TEnum)(object)value;
-        }
-
-        public TEnum ReadEnum<TEnum>() where TEnum : Enum
-        {
-            Type type = Enum.GetUnderlyingType(typeof(TEnum));
-            if (type == typeof(byte))
-            {
-                return ReadEnum<TEnum, byte>(ReadByte, "0x{0:X}");
-            }
-
-            if (type == typeof(sbyte))
-            {
-                return ReadEnum<TEnum, sbyte>(ReadSByte, "0x{0:X}");
-            }
-
-            if (type == typeof(short))
-            {
-                return ReadEnum<TEnum, short>(ReadInt16, "0x{0:X}");
-            }
-
-            if (type == typeof(ushort))
-            {
-                return ReadEnum<TEnum, ushort>(ReadUInt16, "0x{0:X}");
-            }
-
-            if (type == typeof(int))
-            {
-                return ReadEnum<TEnum, int>(ReadInt32, "0x{0:X}");
-            }
-
-            if (type == typeof(uint))
-            {
-                return ReadEnum<TEnum, uint>(ReadUInt32, "0x{0:X}");
-            }
-
-            if (type == typeof(long))
-            {
-                return ReadEnum<TEnum, long>(ReadInt64, "0x{0:X}");
-            }
-
-            if (type == typeof(ulong))
-            {
-                return ReadEnum<TEnum, ulong>(ReadUInt64, "0x{0:X}");
-            }
-
-            throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an unknown underlying value type: {type.Name}");
-        }
-
-        public TEnum ReadEnum8<TEnum>() where TEnum : Enum
-        {
-            Type type = Enum.GetUnderlyingType(typeof(TEnum));
-            if (type == typeof(byte))
-            {
-                return ReadEnum<TEnum, byte>(ReadByte, "0x{0:X}");
-            }
-
-            if (type == typeof(sbyte))
-            {
-                return ReadEnum<TEnum, sbyte>(ReadSByte, "0x{0:X}");
-            }
-
-            throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an invalid underlying value type: {type.Name}");
-        }
-
-        public TEnum ReadEnum16<TEnum>() where TEnum : Enum
-        {
-            Type type = Enum.GetUnderlyingType(typeof(TEnum));
-            if (type == typeof(short))
-            {
-                return ReadEnum<TEnum, short>(ReadInt16, "0x{0:X}");
-            }
-
-            if (type == typeof(ushort))
-            {
-                return ReadEnum<TEnum, ushort>(ReadUInt16, "0x{0:X}");
-            }
-
-            throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an invalid underlying value type: {type.Name}");
-        }
-
-        public TEnum ReadEnum32<TEnum>() where TEnum : Enum
-        {
-            Type type = Enum.GetUnderlyingType(typeof(TEnum));
-            if (type == typeof(int))
-            {
-                return ReadEnum<TEnum, int>(ReadInt32, "0x{0:X}");
-            }
-
-            if (type == typeof(uint))
-            {
-                return ReadEnum<TEnum, uint>(ReadUInt32, "0x{0:X}");
-            }
-
-            throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an invalid underlying value type: {type.Name}");
-        }
-
-        public TEnum ReadEnum64<TEnum>() where TEnum : Enum
-        {
-            Type type = Enum.GetUnderlyingType(typeof(TEnum));
-            if (type == typeof(long))
-            {
-                return ReadEnum<TEnum, long>(ReadInt64, "0x{0:X}");
-            }
-
-            if (type == typeof(ulong))
-            {
-                return ReadEnum<TEnum, ulong>(ReadUInt64, "0x{0:X}");
-            }
-
-            throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an invalid underlying value type: {type.Name}");
-        }
-
-        #endregion
-
-        #region VariableValue
-
-        public long ReadVarValSigned()
+        public long[] ReadSignedVarVals(int count)
         {
             return VariableValueSize switch
             {
-                1 => ReadSByte(),
-                2 => ReadInt16(),
-                4 => ReadInt32(),
-                8 => ReadInt64(),
-                _ => throw new NotSupportedException($"{nameof(VariableValueSize)} {VariableValueSize} is not supported for {ReadVarValSigned}"),
-            };
-        }
-
-        public long[] ReadVarValsSigned(int count)
-        {
-            return VariableValueSize switch
-            {
-                1 => ReadArrayAndCast<sbyte, long>(Convert.ToInt64, count),
+                1 => ReadArrayCast<sbyte, long>(Convert.ToInt64, count),
                 2 => ReadArrayEndianCast<short, long>(BinaryPrimitives.ReverseEndianness, Convert.ToInt64, count),
                 4 => ReadArrayEndianCast<int, long>(BinaryPrimitives.ReverseEndianness, Convert.ToInt64, count),
                 8 => ReadInt64s(count),
-                _ => throw new NotSupportedException($"{nameof(VariableValueSize)} {VariableValueSize} is not supported for {ReadVarValsSigned}"),
+                _ => throw new NotSupportedException($"{nameof(VariableValueSize)} {VariableValueSize} is not supported for {ReadSignedVarVals}"),
             };
         }
 
-        public ulong ReadVarValUnsigned()
+        public ulong[] ReadUnsignedVarVals(int count)
         {
             return VariableValueSize switch
             {
-                1 => ReadByte(),
-                2 => ReadUInt16(),
-                4 => ReadUInt32(),
-                8 => ReadUInt64(),
-                _ => throw new NotSupportedException($"{nameof(VariableValueSize)} {VariableValueSize} is not supported for {ReadVarValUnsigned}"),
-            };
-        }
-
-        public ulong[] ReadVarValsUnsigned(int count)
-        {
-            return VariableValueSize switch
-            {
-                1 => ReadArrayAndCast<byte, ulong>(Convert.ToUInt64, count),
+                1 => ReadArrayCast<byte, ulong>(Convert.ToUInt64, count),
                 2 => ReadArrayEndianCast<ushort, ulong>(BinaryPrimitives.ReverseEndianness, Convert.ToUInt64, count),
                 4 => ReadArrayEndianCast<uint, ulong>(BinaryPrimitives.ReverseEndianness, Convert.ToUInt64, count),
                 8 => ReadUInt64s(count),
-                _ => throw new NotSupportedException($"{nameof(VariableValueSize)} {VariableValueSize} is not supported for {ReadVarValsUnsigned}"),
+                _ => throw new NotSupportedException($"{nameof(VariableValueSize)} {VariableValueSize} is not supported for {ReadUnsignedVarVals}"),
             };
         }
 
-        public double ReadVarValPrecise()
+        public double[] ReadPreciseVarVals(int count)
         {
             return VariableValueSize switch
             {
-                2 => (double)ReadHalf(),
-                4 => ReadSingle(),
-                8 => ReadDouble(),
-                _ => throw new NotSupportedException($"{nameof(VariableValueSize)} {VariableValueSize} is not supported for {ReadVarValPrecise}"),
-            };
-        }
-
-        public double[] ReadVarValsPrecise(int count)
-        {
-            return VariableValueSize switch
-            {
-                2 => ReadArrayCheckEndiannessConvertAndCast<ushort, Half, double>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt16BitsToHalf, ConvertHelper.ToDouble, count),
-                4 => ReadArrayCheckEndiannessConvertAndCast<uint, float, double>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt32BitsToSingle, Convert.ToDouble, count),
+                2 => ReadArrayEndianConvertCast<ushort, Half, double>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt16BitsToHalf, (Half value) => (double)value, count),
+                4 => ReadArrayEndianConvertCast<uint, float, double>(BinaryPrimitives.ReverseEndianness, BitConverter.UInt32BitsToSingle, Convert.ToDouble, count),
                 8 => ReadDoubles(count),
-                _ => throw new NotSupportedException($"{nameof(VariableValueSize)} {VariableValueSize} is not supported for {ReadVarValsPrecise}"),
+                _ => throw new NotSupportedException($"{nameof(VariableValueSize)} {VariableValueSize} is not supported for {ReadPreciseVarVals}"),
             };
         }
-
-        public long GetVarValSigned(int position)
-            => Get(ReadVarValSigned, position);
-
-        public long[] GetVarValsSigned(int position, int count)
-            => Get(() => ReadVarValsSigned(count), position);
-
-        public ulong GetVarValUnsigned(int position)
-            => Get(ReadVarValUnsigned, position);
-
-        public ulong[] GetVarValsUnsigned(int position, int count)
-            => Get(() => ReadVarValsUnsigned(count), position);
-
-        public double GetVarValPrecise(int position)
-            => Get(ReadVarValPrecise, position);
-
-        public double[] GetVarValPrecise(int position, int count)
-            => Get(() => ReadVarValsPrecise(count), position);
-
-        public long PeekVarValSigned()
-            => Peek(ReadVarValSigned);
-
-        public long[] PeekVarValsSigned(int count)
-            => Peek(() => ReadVarValsSigned(count));
-
-        public ulong PeekVarValUnsigned()
-            => Peek(ReadVarValUnsigned);
-
-        public ulong[] PeekVarValsUnsigned(int count)
-            => Peek(() => ReadVarValsUnsigned(count));
-
-        public double PeekVarValPrecise()
-            => Peek(ReadVarValPrecise);
-
-        public double[] PeekVarValPrecise(int count)
-            => Peek(() => ReadVarValsPrecise(count));
-
-        public long AssertVarValSigned(long option)
-            => Assert(ReadVarValSigned(), $"VarValS{VariableValueSize}", "0x{0:X}", option);
-
-        public long AssertVarValSigned(ReadOnlySpan<long> options)
-            => Assert(ReadVarValSigned(), $"VarValS{VariableValueSize}", "0x{0:X}", options);
-
-        public ulong AssertVarValUnsigned(ulong option)
-            => Assert(ReadVarValUnsigned(), $"VarValU{VariableValueSize}", "0x{0:X}", option);
-
-        public ulong AssertVarValUnsigned(ReadOnlySpan<ulong> options)
-            => Assert(ReadVarValUnsigned(), $"VarValU{VariableValueSize}", "0x{0:X}", options);
-
-        public double AssertVarValPrecise(double option)
-            => Assert(ReadVarValUnsigned(), $"VarValF{VariableValueSize}", "0x{0:X}", option);
-
-        public double AssertVarValPrecise(ReadOnlySpan<double> options)
-            => Assert(ReadVarValUnsigned(), $"VarValF{VariableValueSize}", "0x{0:X}", options);
 
         #endregion
+
+        #region Get Array
+
+        private T[] GetArray<T>(Func<int, T[]> readArray, long position, int count)
+        {
+            int returnPosition = _position;
+            Position = position;
+            T[] values = readArray(count);
+            _position = returnPosition;
+            return values;
+        }
+
+        public T[] GetArray<T>(long position, int count) where T : unmanaged
+        {
+            int returnPosition = _position;
+            Position = position;
+            T[] values = ReadArray<T>(count);
+            _position = returnPosition;
+            return values;
+        }
+
+        public sbyte[] GetSBytes(long position, int count)
+            => GetArray<sbyte>(position, count);
+
+        public byte[] GetBytes(long position, int count)
+            => GetArray<byte>(position, count);
+
+        public short[] GetInt16s(long position, int count)
+            => GetArray(ReadInt16s, position, count);
+
+        public ushort[] GetUInt16s(long position, int count)
+            => GetArray(ReadUInt16s, position, count);
+
+        public int[] GetInt32s(long position, int count)
+            => GetArray(ReadInt32s, position, count);
+
+        public uint[] GetUInt32s(long position, int count)
+            => GetArray(ReadUInt32s, position, count);
+
+        public long[] GetInt64s(long position, int count)
+            => GetArray(ReadInt64s, position, count);
+
+        public ulong[] GetUInt64s(long position, int count)
+            => GetArray(ReadUInt64s, position, count);
+
+        public Int128[] GetInt128s(long position, int count)
+            => GetArray(ReadInt128s, position, count);
+
+        public UInt128[] GetUInt128s(long position, int count)
+            => GetArray(ReadUInt128s, position, count);
+
+        public Half[] GetHalfs(long position, int count)
+            => GetArray(ReadHalfs, position, count);
+
+        public float[] GetSingles(long position, int count)
+            => GetArray(ReadSingles, position, count);
+
+        public double[] GetDoubles(long position, int count)
+            => GetArray(ReadDoubles, position, count);
+
+        public bool[] GetBooleans(long position, int count)
+            => GetArray(ReadBooleans, position, count);
+
+        public Vector2[] GetVector2s(long position, int count)
+            => GetArray(ReadVector2s, position, count);
+
+        public Vector3[] GetVector3s(long position, int count)
+            => GetArray(ReadVector3s, position, count);
+
+        public Vector4[] GetVector4s(long position, int count)
+            => GetArray(ReadVector4s, position, count);
+
+        public Quaternion[] GetQuaternions(long position, int count)
+            => GetArray(ReadQuaternions, position, count);
+
+        public long[] GetSignedVarVals(long position, int count)
+            => GetArray(ReadSignedVarVals, position, count);
+
+        public ulong[] GetUnsignedVarVals(long position, int count)
+            => GetArray(ReadUnsignedVarVals, position, count);
+
+        public double[] GetPreciseVarVals(long position, int count)
+            => GetArray(ReadPreciseVarVals, position, count);
+
+        #endregion
+
+        #region Peek Array
+
+        private T[] PeekArray<T>(Func<int, T[]> readArray, int count)
+        {
+            int startPosition = _position;
+            T[] values = readArray(count);
+            _position = startPosition;
+            return values;
+        }
+
+        public T[] PeekArray<T>(int count) where T : unmanaged
+            => PeekSpan<T>(count).ToArray();
+
+        public sbyte[] PeekSBytes(int count)
+            => PeekArray<sbyte>(count);
+
+        public byte[] PeekBytes(int count)
+            => PeekArray<byte>(count);
+
+        public short[] PeekInt16s(int count)
+            => PeekArray(ReadInt16s, count);
+
+        public ushort[] PeekUInt16s(int count)
+            => PeekArray(ReadUInt16s, count);
+
+        public int[] PeekInt32s(int count)
+            => PeekArray(ReadInt32s, count);
+
+        public uint[] PeekUInt32s(int count)
+            => PeekArray(ReadUInt32s, count);
+
+        public long[] PeekInt64s(int count)
+            => PeekArray(ReadInt64s, count);
+
+        public ulong[] PeekUInt64s(int count)
+            => PeekArray(ReadUInt64s, count);
+
+        public Int128[] PeekInt128s(int count)
+            => PeekArray(ReadInt128s, count);
+
+        public UInt128[] PeekUInt128s(int count)
+            => PeekArray(ReadUInt128s, count);
+
+        public Half[] PeekHalfs(int count)
+            => PeekArray(ReadHalfs, count);
+
+        public float[] PeekSingles(int count)
+            => PeekArray(ReadSingles, count);
+
+        public double[] PeekDoubles(int count)
+            => PeekArray(ReadDoubles, count);
+
+        public bool[] PeekBooleans(int count)
+            => PeekArray(ReadBooleans, count);
+
+        public Vector2[] PeekVector2s(int count)
+            => PeekArray(ReadVector2s, count);
+
+        public Vector3[] PeekVector3s(int count)
+            => PeekArray(ReadVector3s, count);
+
+        public Vector4[] PeekVector4s(int count)
+            => PeekArray(ReadVector4s, count);
+
+        public Quaternion[] PeekQuaternions(int count)
+            => PeekArray(ReadQuaternions, count);
+
+        public long[] PeekVarValsSigned(int count)
+            => PeekArray(ReadSignedVarVals, count);
+
+        public ulong[] PeekVarValsUnsigned(int count)
+            => PeekArray(ReadUnsignedVarVals, count);
+
+        public double[] PeekVarValsPrecise(int count)
+            => PeekArray(ReadPreciseVarVals, count);
+
+        #endregion
+
+        #region Read Span
+
+        public unsafe Span<T> ReadSpan<T>(int count) where T : unmanaged
+        {
+            int size = sizeof(T) * count;
+            int endPosition = _position + size;
+            if (endPosition > _length)
+            {
+                throw new InvalidOperationException("Cannot read beyond the specified region of memory.");
+            }
+            var value = MemoryMarshal.Cast<byte, T>(_memory.Span.Slice(_position, size));
+            _position = endPosition;
+            return value;
+        }
+
+        #endregion
+
+        #region Get Span
+
+        public Span<T> GetSpan<T>(long position, int count) where T : unmanaged
+        {
+            int returnPosition = _position;
+            Position = position;
+            var values = ReadSpan<T>(count);
+            _position = returnPosition;
+            return values;
+        }
+
+        #endregion
+
+        #region Peek Span
+
+        public unsafe Span<T> PeekSpan<T>(int count) where T : unmanaged
+        {
+            int size = sizeof(T) * count;
+            if ((_position + size) > _length)
+            {
+                throw new InvalidOperationException("Cannot read beyond the specified region of memory.");
+            }
+            return MemoryMarshal.Cast<byte, T>(_memory.Span.Slice(_position, size));
+        }
+
+        #endregion
+
+        #region Read Memory
+
+        public Memory<byte> ReadByteMemory(int size)
+        {
+            var value = _memory.Slice(_position, size);
+            _position += size;
+            return value;
+        }
+
+        #endregion
+
     }
 }

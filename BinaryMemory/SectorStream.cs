@@ -85,48 +85,50 @@ namespace BinaryMemory
             => BaseStream.Flush();
 
         /// <summary>
-        /// Aligns the stream, then reads the specified number of bytes into the specified buffer at the specified offset.
+        /// Reads the specified number of bytes into the specified buffer at the specified offset unaligned.
         /// </summary>
         /// <param name="buffer">The buffer to read into.</param>
         /// <param name="offset">The byte offset to read into the buffer.</param>
         /// <param name="count">The number of bytes to read.</param>
         /// <returns>The total number of read bytes.</returns>
         public override int Read(byte[] buffer, int offset, int count)
-        {
-            AlignSector();
-            return BaseStream.Read(buffer, offset, count);
-        }
+            => BaseStream.Read(buffer, offset, count);
 
         /// <summary>
-        /// Aligns the stream, then reads into the specified bytes.
+        /// Reads into the specified span of bytes unaligned.
         /// </summary>
         /// <param name="bytes">The bytes to read into.</param>
         /// <returns>The total number of read bytes.</returns>
         public override int Read(Span<byte> bytes)
-        {
-            AlignSector();
-            return BaseStream.Read(bytes);
-        }
+            => BaseStream.Read(bytes);
 
         /// <summary>
-        /// Reads the specified number of bytes into the specified buffer at the specified offset.
+        /// Reads the specified number of bytes into the specified buffer at the specified offset aligned.<br/>
+        /// Do not use for reading bit-by-bit, only for entire sectors at a time.
         /// </summary>
         /// <param name="buffer">The buffer to read into.</param>
         /// <param name="offset">The byte offset to read into the buffer.</param>
         /// <param name="count">The number of bytes to read.</param>
         /// <returns>The total number of read bytes.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int ReadUnaligned(byte[] buffer, int offset, int count)
-            => BaseStream.Read(buffer, offset, count);
+        public int ReadAligned(byte[] buffer, int offset, int count)
+        {
+            AlignSector();
+            return BaseStream.Read(buffer, offset, count);
+        }
 
         /// <summary>
-        /// Reads into the specified span of bytes.
+        /// Reads into the specified span of bytes aligned.<br/>
+        /// Do not use for reading bit-by-bit, only for entire sectors at a time.
         /// </summary>
         /// <param name="bytes">The span of bytes to read into.</param>
         /// <returns>The total number of read bytes.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int ReadUnaligned(Span<byte> bytes)
-            => BaseStream.Read(bytes);
+        public int ReadAligned(Span<byte> bytes)
+        {
+            AlignSector();
+            return BaseStream.Read(bytes);
+        }
 
         /// <summary>
         /// Aligns the stream, then reads the specified number of sectors into the specified buffer at the specified offset.
@@ -168,44 +170,44 @@ namespace BinaryMemory
             => BaseStream.SetLength(value * SectorSize);
 
         /// <summary>
-        /// Aligns the stream, then writes the specified number of bytes at the specified offset in the buffer into the stream.
+        /// Writes the specified number of bytes at the specified offset in the buffer into the stream unaligned.
         /// </summary>
         /// <param name="buffer">The buffer to write into the stream.</param>
         /// <param name="offset">The offset in the buffer to write from.</param>
         /// <param name="count">The number of bytes in the buffer to write.</param>
         public override void Write(byte[] buffer, int offset, int count)
+            => BaseStream.Write(buffer, offset, count);
+
+        /// <summary>
+        /// Writes the specified bytes into the stream unaligned.
+        /// </summary>
+        /// <param name="bytes">The bytes to write into the stream.</param>
+        public override void Write(ReadOnlySpan<byte> bytes)
+            => BaseStream.Write(bytes);
+
+        /// <summary>
+        /// Writes the specified number of bytes at the specified offset in the buffer into the stream aligned.<br/>
+        /// Do not use for writing bit-by-bit, only for entire sectors at a time.
+        /// </summary>
+        /// <param name="buffer">The buffer to write into the stream.</param>
+        /// <param name="offset">The offset in the buffer to write from.</param>
+        /// <param name="count">The number of bytes in the buffer to write.</param>
+        public void WriteAligned(byte[] buffer, int offset, int count)
         {
             PadSector();
             BaseStream.Write(buffer, offset, count);
         }
 
         /// <summary>
-        /// Aligns the stream, then writes the specified bytes into the stream.
+        /// Writes the specified bytes into the stream aligned.<br/>
+        /// Do not use for writing bit-by-bit, only for entire sectors at a time.
         /// </summary>
         /// <param name="bytes">The bytes to write into the stream.</param>
-        public override void Write(ReadOnlySpan<byte> bytes)
+        public void WriteAligned(ReadOnlySpan<byte> bytes)
         {
             PadSector();
             BaseStream.Write(bytes);
         }
-
-        /// <summary>
-        /// Writes the specified number of bytes at the specified offset in the buffer into the stream.
-        /// </summary>
-        /// <param name="buffer">The buffer to write into the stream.</param>
-        /// <param name="offset">The offset in the buffer to write from.</param>
-        /// <param name="count">The number of bytes in the buffer to write.</param>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void WriteUnaligned(byte[] buffer, int offset, int count)
-            => BaseStream.Write(buffer, offset, count);
-
-        /// <summary>
-        /// Writes the specified bytes into the stream.
-        /// </summary>
-        /// <param name="bytes">The bytes to write into the stream.</param>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void WriteUnaligned(ReadOnlySpan<byte> bytes)
-            => BaseStream.Write(bytes);
 
         /// <summary>
         /// Aligns the stream, then writes the specified number of sectors at the specified offset in the buffer into the stream.
@@ -220,7 +222,9 @@ namespace BinaryMemory
         }
 
         /// <summary>
-        /// Align to the sector size.
+        /// Align to the sector size.<br/>
+        /// Only changes position, does not pad to sector size.<br/>
+        /// To pad to sector size see: <see cref="PadSector"/>.
         /// </summary>
         public void AlignSector()
         {

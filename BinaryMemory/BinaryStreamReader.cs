@@ -66,9 +66,10 @@ namespace BinaryMemory
         /// </summary>
         /// <param name="stream">The <see cref="Stream"/> to read from.</param>
         /// <param name="bigEndian">Whether or not to read in big endian byte ordering.</param>
-        public BinaryStreamReader(Stream stream, bool bigEndian = false)
+        /// <param name="leaveOpen">Whether or not to leave the underlying <see cref="Stream"/> open when disposing.</param>
+        public BinaryStreamReader(Stream stream, bool bigEndian = false, bool leaveOpen = false)
         {
-            _br = new BinaryReader(stream);
+            _br = new BinaryReader(stream, Encoding.UTF8, leaveOpen);
             _steps = new Stack<long>();
             BigEndian = bigEndian;
         }
@@ -78,14 +79,14 @@ namespace BinaryMemory
         /// </summary>
         /// <param name="bytes">An array of bytes to read from.</param>
         /// <param name="bigEndian">Whether or not to read in big endian byte ordering.</param>
-        public BinaryStreamReader(byte[] bytes, bool bigEndian = false) : this(new MemoryStream(bytes, false), bigEndian) { }
+        public BinaryStreamReader(byte[] bytes, bool bigEndian = false) : this(new MemoryStream(bytes, false), bigEndian, false) { }
 
         /// <summary>
         /// Create a new <see cref="BinaryStreamReader"/> from a file.
         /// </summary>
         /// <param name="path">The path to the file to read from.</param>
         /// <param name="bigEndian">Whether or not to read in big endian byte ordering.</param>
-        public BinaryStreamReader(string path, bool bigEndian = false) : this(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read), bigEndian) { }
+        public BinaryStreamReader(string path, bool bigEndian = false) : this(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read), bigEndian, false) { }
 
         #region Position
 
@@ -164,6 +165,18 @@ namespace BinaryMemory
             return value;
         }
 
+        private static TEnum ReadEnum<TEnum, TValue>(Func<TValue> read, string valueFormat)
+            where TEnum : Enum
+            where TValue : notnull
+        {
+            TValue value = read();
+            if (!Enum.IsDefined(typeof(TEnum), value))
+            {
+                throw new InvalidDataException($"Read value not present in enum: {string.Format(valueFormat, value)}");
+            }
+            return (TEnum)(object)value;
+        }
+
         protected byte[] Read8BitTerminatedStringBytes()
         {
             var bytes = new List<byte>();
@@ -236,6 +249,42 @@ namespace BinaryMemory
             }
 
             return [.. bytes];
+        }
+
+        private string ReadFixedTerminatedString(Encoding encoding, int length)
+        {
+            byte[] bytes = ReadBytes(length);
+            int terminatorIndex;
+            for (terminatorIndex = 0; terminatorIndex < length; terminatorIndex++)
+                if (bytes[terminatorIndex] == 0)
+                    break;
+
+            return encoding.GetString(bytes, 0, terminatorIndex);
+        }
+
+        private string ReadFixedTerminatedStringW(Encoding encoding, int length, int bytesPerChar)
+        {
+            byte[] bytes = ReadBytes(length * bytesPerChar);
+            int terminatorIndex;
+            for (terminatorIndex = 0; terminatorIndex < length; terminatorIndex += bytesPerChar)
+            {
+                bool terminate = true;
+                
+                // Cancel termination if a byte is not null
+                for (int i = 0; i < bytesPerChar; i++)
+                {
+                    if (bytes[terminatorIndex + i] != 0)
+                    {
+                        terminate = false;
+                        break;
+                    }
+                }
+
+                if (terminate)
+                    break;
+            }
+
+            return encoding.GetString(bytes, 0, terminatorIndex);
         }
 
         public sbyte ReadSByte()
@@ -330,6 +379,139 @@ namespace BinaryMemory
         public Quaternion ReadQuaternion()
             => new Quaternion(ReadSingle(), ReadSingle(), ReadSingle(), ReadSingle());
 
+        public TEnum ReadEnumSByte<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, sbyte>(ReadSByte, "0x{0:X}");
+
+        public TEnum ReadEnumByte<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, byte>(ReadByte, "0x{0:X}");
+
+        public TEnum ReadEnumInt16<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, short>(ReadInt16, "0x{0:X}");
+
+        public TEnum ReadEnumUInt16<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, ushort>(ReadUInt16, "0x{0:X}");
+
+        public TEnum ReadEnumInt32<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, int>(ReadInt32, "0x{0:X}");
+
+        public TEnum ReadEnumUInt32<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, uint>(ReadUInt32, "0x{0:X}");
+
+        public TEnum ReadEnumInt64<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, long>(ReadInt64, "0x{0:X}");
+
+        public TEnum ReadEnumUInt64<TEnum>() where TEnum : Enum
+            => ReadEnum<TEnum, ulong>(ReadUInt64, "0x{0:X}");
+
+        public TEnum ReadEnum<TEnum>() where TEnum : Enum
+        {
+            Type type = Enum.GetUnderlyingType(typeof(TEnum));
+            if (type == typeof(sbyte))
+            {
+                return ReadEnumSByte<TEnum>();
+            }
+            else if (type == typeof(byte))
+            {
+                return ReadEnumByte<TEnum>();
+            }
+            else if (type == typeof(short))
+            {
+                return ReadEnumInt16<TEnum>();
+            }
+            else if (type == typeof(ushort))
+            {
+                return ReadEnumUInt16<TEnum>();
+            }
+            else if (type == typeof(int))
+            {
+                return ReadEnumInt32<TEnum>();
+            }
+            else if (type == typeof(uint))
+            {
+                return ReadEnumUInt32<TEnum>();
+            }
+            else if (type == typeof(long))
+            {
+                return ReadEnumInt64<TEnum>();
+            }
+            else if (type == typeof(ulong))
+            {
+                return ReadEnumUInt64<TEnum>();
+            }
+            else
+            {
+                throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an unknown underlying value type: {type.Name}");
+            }
+        }
+
+        public TEnum ReadEnum8<TEnum>() where TEnum : Enum
+        {
+            Type type = Enum.GetUnderlyingType(typeof(TEnum));
+            if (type == typeof(sbyte))
+            {
+                return ReadEnumSByte<TEnum>();
+            }
+            else if (type == typeof(byte))
+            {
+                return ReadEnumByte<TEnum>();
+            }
+            else
+            {
+                throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an invalid underlying value type: {type.Name}");
+            }
+        }
+
+        public TEnum ReadEnum16<TEnum>() where TEnum : Enum
+        {
+            Type type = Enum.GetUnderlyingType(typeof(TEnum));
+            if (type == typeof(short))
+            {
+                return ReadEnumInt16<TEnum>();
+            }
+            else if (type == typeof(ushort))
+            {
+                return ReadEnumUInt16<TEnum>();
+            }
+            else
+            {
+                throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an invalid underlying value type: {type.Name}");
+            }
+        }
+
+        public TEnum ReadEnum32<TEnum>() where TEnum : Enum
+        {
+            Type type = Enum.GetUnderlyingType(typeof(TEnum));
+            if (type == typeof(int))
+            {
+                return ReadEnumInt32<TEnum>();
+            }
+            else if (type == typeof(uint))
+            {
+                return ReadEnumUInt32<TEnum>();
+            }
+            else
+            {
+                throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an invalid underlying value type: {type.Name}");
+            }
+        }
+
+        public TEnum ReadEnum64<TEnum>() where TEnum : Enum
+        {
+            Type type = Enum.GetUnderlyingType(typeof(TEnum));
+            if (type == typeof(long))
+            {
+                return ReadEnumInt64<TEnum>();
+            }
+            else if (type == typeof(ulong))
+            {
+                return ReadEnumUInt64<TEnum>();
+            }
+            else
+            {
+                throw new InvalidDataException($"Enum {typeof(TEnum).Name} has an invalid underlying value type: {type.Name}");
+            }
+        }
+
         public string ReadUTF8()
             => Encoding.UTF8.GetString(Read8BitTerminatedStringBytes());
 
@@ -367,40 +549,40 @@ namespace BinaryMemory
             => EncodingHelper.UTF32BE.GetString(Read32BitTerminatedStringBytes());
 
         public string ReadUTF8(int length)
-            => Encoding.UTF8.GetString(ReadBytes(length));
+            => ReadFixedTerminatedString(Encoding.UTF8, length);
 
         public string ReadASCII(int length)
-            => Encoding.ASCII.GetString(ReadBytes(length));
+            => ReadFixedTerminatedString(Encoding.ASCII, length);
 
         public string ReadShiftJIS(int length)
-            => EncodingHelper.ShiftJIS.GetString(ReadBytes(length));
+            => ReadFixedTerminatedString(EncodingHelper.ShiftJIS, length);
 
         public string ReadEucJP(int length)
-            => EncodingHelper.EucJP.GetString(ReadBytes(length));
+            => ReadFixedTerminatedString(EncodingHelper.EucJP, length);
 
         public string ReadEucCN(int length)
-            => EncodingHelper.EucCN.GetString(ReadBytes(length));
+            => ReadFixedTerminatedString(EncodingHelper.EucCN, length);
 
         public string ReadEucKR(int length)
-            => EncodingHelper.EucKR.GetString(ReadBytes(length));
+            => ReadFixedTerminatedString(EncodingHelper.EucKR, length);
 
         public string ReadUTF16(int length)
-            => BigEndian ? EncodingHelper.UTF16BE.GetString(ReadBytes(length * 2)) : EncodingHelper.UTF16LE.GetString(ReadBytes(length * 2));
+            => BigEndian ? ReadFixedTerminatedStringW(EncodingHelper.UTF16BE, length, 2) : ReadFixedTerminatedStringW(EncodingHelper.UTF16LE, length, 2);
 
         public string ReadUTF16LittleEndian(int length)
-            => EncodingHelper.UTF16LE.GetString(ReadBytes(length * 2));
+            => ReadFixedTerminatedStringW(EncodingHelper.UTF16LE, length, 2);
 
         public string ReadUTF16BigEndian(int length)
-            => EncodingHelper.UTF16BE.GetString(ReadBytes(length * 2));
+            => ReadFixedTerminatedStringW(EncodingHelper.UTF16BE, length, 2);
 
         public string ReadUTF32(int length)
-            => BigEndian ? EncodingHelper.UTF32BE.GetString(ReadBytes(length * 4)) : EncodingHelper.UTF32LE.GetString(ReadBytes(length * 4));
+            => BigEndian ? ReadFixedTerminatedStringW(EncodingHelper.UTF32BE, length, 4) : ReadFixedTerminatedStringW(EncodingHelper.UTF32LE, length, 4);
 
         public string ReadUTF32LittleEndian(int length)
-            => EncodingHelper.UTF32LE.GetString(ReadBytes(length * 4));
+            => ReadFixedTerminatedStringW(EncodingHelper.UTF32LE, length, 4);
 
         public string ReadUTF32BigEndian(int length)
-            => EncodingHelper.UTF32BE.GetString(ReadBytes(length * 4));
+            => ReadFixedTerminatedStringW(EncodingHelper.UTF32BE, length, 4);
 
         #endregion
 

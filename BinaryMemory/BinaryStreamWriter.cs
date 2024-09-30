@@ -1,4 +1,6 @@
 ﻿using System.Buffers.Binary;
+using System.Drawing;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text;
 
@@ -69,9 +71,10 @@ namespace BinaryMemory
         /// </summary>
         /// <param name="stream">The <see cref="Stream"/> to write to.</param>
         /// <param name="bigEndian">Whether or not to write in big endian byte ordering.</param>
-        public BinaryStreamWriter(Stream stream, bool bigEndian = false)
+        /// <param name="leaveOpen">Whether or not to leave the underlying <see cref="Stream"/> open when disposing.</param>
+        public BinaryStreamWriter(Stream stream, bool bigEndian = false, bool leaveOpen = false)
         {
-            _bw = new BinaryWriter(stream);
+            _bw = new BinaryWriter(stream, Encoding.UTF8, leaveOpen);
             _steps = new Stack<long>();
             _reservations = new Dictionary<string, long>();
             BigEndian = bigEndian;
@@ -82,14 +85,14 @@ namespace BinaryMemory
         /// </summary>
         /// <param name="bytes">An array of bytes to write to.</param>
         /// <param name="bigEndian">Whether or not to write in big endian byte ordering.</param>
-        public BinaryStreamWriter(byte[] bytes, bool bigEndian = false) : this(new MemoryStream(bytes, true), bigEndian) { }
+        public BinaryStreamWriter(byte[] bytes, bool bigEndian = false) : this(new MemoryStream(bytes, true), bigEndian, false) { }
 
         /// <summary>
         /// Create a new <see cref="BinaryStreamWriter"/> from a file.
         /// </summary>
         /// <param name="path">The path to the file to write to.</param>
         /// <param name="bigEndian">Whether or not to write in big endian byte ordering.</param>
-        public BinaryStreamWriter(string path, bool bigEndian = false) : this(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read), bigEndian) { }
+        public BinaryStreamWriter(string path, bool bigEndian = false) : this(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read), bigEndian, false) { }
 
         /// <summary>
         /// Create a new <see cref="BinaryStreamWriter"/>.
@@ -211,6 +214,96 @@ namespace BinaryMemory
 
         public void WriteBoolean(bool value)
             => _bw.Write(value);
+
+        public void WriteVector2(Vector2 value)
+        {
+            WriteSingle(value.X);
+            WriteSingle(value.Y);
+        }
+
+        public void WriteVector3(Vector3 value)
+        {
+            WriteSingle(value.X);
+            WriteSingle(value.Y);
+            WriteSingle(value.Z);
+        }
+
+        public void WriteVector4(Vector4 value)
+        {
+            WriteSingle(value.X);
+            WriteSingle(value.Y);
+            WriteSingle(value.Z);
+            WriteSingle(value.W);
+        }
+
+        public void WriteQuaternion(Quaternion value)
+        {
+            WriteSingle(value.X);
+            WriteSingle(value.Y);
+            WriteSingle(value.Z);
+            WriteSingle(value.W);
+        }
+
+        public void WriteColor3(byte[] color)
+        {
+            WriteByte(color[0]);
+            WriteByte(color[1]);
+            WriteByte(color[2]);
+        }
+
+        public void WriteColorRGB(Color color)
+        {
+            WriteByte(color.R);
+            WriteByte(color.G);
+            WriteByte(color.B);
+        }
+
+        public void WriteColorBGR(Color color)
+        {
+            WriteByte(color.B);
+            WriteByte(color.G);
+            WriteByte(color.R);
+        }
+
+        public void WriteColor4(byte[] color)
+        {
+            WriteByte(color[0]);
+            WriteByte(color[1]);
+            WriteByte(color[2]);
+            WriteByte(color[3]);
+        }
+
+        public void WriteColorRGBA(Color color)
+        {
+            WriteByte(color.R);
+            WriteByte(color.G);
+            WriteByte(color.B);
+            WriteByte(color.A);
+        }
+
+        public void WriteColorBGRA(Color color)
+        {
+            WriteByte(color.B);
+            WriteByte(color.G);
+            WriteByte(color.R);
+            WriteByte(color.A);
+        }
+
+        public void WriteColorARGB(Color color)
+        {
+            WriteByte(color.A);
+            WriteByte(color.R);
+            WriteByte(color.G);
+            WriteByte(color.B);
+        }
+
+        public void WriteColorABGR(Color color)
+        {
+            WriteByte(color.A);
+            WriteByte(color.B);
+            WriteByte(color.G);
+            WriteByte(color.R);
+        }
 
         public void WriteString(string value, Encoding encoding, bool terminate = false)
             => WriteBytes(encoding.GetBytes(terminate ? value + '\0' : value));

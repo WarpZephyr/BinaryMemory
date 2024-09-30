@@ -170,6 +170,27 @@ namespace BinaryMemory
 
         #endregion
 
+        #region Pad
+
+        /// <summary>
+        /// Writes null bytes until the position meets the specified alignment.
+        /// </summary>
+        public void Pad(int alignment)
+        {
+            long remainder = Position % alignment;
+            if (remainder > 0)
+            {
+                long count = alignment - remainder;
+                while (count > 0)
+                {
+                    WriteByte(0);
+                    count--;
+                }
+            }
+        }
+
+        #endregion
+
         #region Step
 
         public void StepIn(long position)

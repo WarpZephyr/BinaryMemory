@@ -21,7 +21,6 @@
         /// The length of this <see cref="SubStream"/>.
         /// </summary>
         private long _length;
-        private bool disposedValue;
 
         public override bool CanRead => BaseStream.CanRead;
 

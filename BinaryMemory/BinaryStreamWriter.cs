@@ -155,7 +155,7 @@ namespace BinaryMemory
 
         #region Pattern
 
-        public void WritePattern(int length, byte pattern)
+        public void WriteBytePattern(int length, byte pattern)
         {
             byte[] bytes = new byte[length];
             for (int i = 0; i < length; i++)
@@ -308,19 +308,19 @@ namespace BinaryMemory
         public void WriteString(string value, Encoding encoding, bool terminate = false)
             => WriteBytes(encoding.GetBytes(terminate ? value + '\0' : value));
 
-        public void WriteFixedString(string value, Encoding encoding, int length, byte paddingValue = 0)
+        public void WriteFixedString(string value, Encoding encoding, int byteLength, byte paddingValue = 0)
         {
-            byte[] bytes = new byte[length];
+            byte[] bytes = new byte[byteLength];
             if (paddingValue != 0)
             {
-                for (int i = 0; i < length; i++)
+                for (int i = 0; i < byteLength; i++)
                 {
                     bytes[i] = paddingValue;
                 }
             }
 
             byte[] valueBytes = encoding.GetBytes(value);
-            Array.Copy(valueBytes, bytes, Math.Min(length, valueBytes.Length));
+            Array.Copy(valueBytes, bytes, Math.Min(byteLength, valueBytes.Length));
             WriteBytes(bytes);
         }
 
@@ -379,22 +379,22 @@ namespace BinaryMemory
             => WriteFixedString(value, EncodingHelper.EucKR, length, paddingValue);
 
         public void WriteFixedUTF16(string value, int length, byte paddingValue = 0)
-            => WriteFixedString(value, BigEndian ? EncodingHelper.UTF16BE : EncodingHelper.UTF16LE, length, paddingValue);
+            => WriteFixedString(value, BigEndian ? EncodingHelper.UTF16BE : EncodingHelper.UTF16LE, length * 2, paddingValue);
 
         public void WriteFixedUTF16LittleEndian(string value, int length, byte paddingValue = 0)
-            => WriteFixedString(value, EncodingHelper.UTF16LE, length, paddingValue);
+            => WriteFixedString(value, EncodingHelper.UTF16LE, length * 2, paddingValue);
 
         public void WriteFixedUTF16BigEndian(string value, int length, byte paddingValue = 0)
-            => WriteFixedString(value, EncodingHelper.UTF16BE, length, paddingValue);
+            => WriteFixedString(value, EncodingHelper.UTF16BE, length * 2, paddingValue);
 
         public void WriteFixedUTF32(string value, int length, byte paddingValue = 0)
-            => WriteFixedString(value, BigEndian ? EncodingHelper.UTF32BE : EncodingHelper.UTF32LE, length, paddingValue);
+            => WriteFixedString(value, BigEndian ? EncodingHelper.UTF32BE : EncodingHelper.UTF32LE, length * 4, paddingValue);
 
         public void WriteFixedUTF32LittleEndian(string value, int length, byte paddingValue = 0)
-            => WriteFixedString(value, EncodingHelper.UTF32LE, length, paddingValue);
+            => WriteFixedString(value, EncodingHelper.UTF32LE, length * 4, paddingValue);
 
         public void WriteFixedUTF32BigEndian(string value, int length, byte paddingValue = 0)
-            => WriteFixedString(value, EncodingHelper.UTF32BE, length, paddingValue);
+            => WriteFixedString(value, EncodingHelper.UTF32BE, length * 4, paddingValue);
 
         #endregion
 

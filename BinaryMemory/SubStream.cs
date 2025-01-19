@@ -1,4 +1,7 @@
-﻿namespace BinaryMemory
+﻿using System;
+using System.IO;
+
+namespace BinaryMemory
 {
     /// <summary>
     /// A <see cref="Stream"/> going over part of another <see cref="Stream"/>.

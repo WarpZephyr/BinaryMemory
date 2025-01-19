@@ -1,4 +1,8 @@
-﻿namespace BinaryMemory
+﻿using System;
+using System.IO;
+using System.Linq;
+
+namespace BinaryMemory
 {
     public static class AssertHelper
     {

@@ -1,7 +1,6 @@
 ﻿using System.Buffers.Binary;
 using System.Drawing;
 using System.Numerics;
-using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace BinaryMemory

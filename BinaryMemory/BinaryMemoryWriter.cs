@@ -13,7 +13,7 @@ namespace BinaryMemory
     /// <summary>
     /// A writer that writes to a region of memory with a fixed length.
     /// </summary>
-    public class BinaryMemoryWriter
+    public class BinaryMemoryWriter : IBinaryWriter
     {
         /// <summary>
         /// The underlying memory.
@@ -280,6 +280,9 @@ namespace BinaryMemory
 
         public void WriteBoolean(bool value)
             => Write((byte)(value ? 1 : 0));
+
+        public void WriteChar(char value)
+            => Write(value);
 
         public void WriteVector2(Vector2 value)
         {

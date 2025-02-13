@@ -14,7 +14,7 @@ namespace BinaryMemory
     /// A reader for data present in a stream.<br/>
     /// Expands upon <see cref="BinaryReader"/>.
     /// </summary>
-    public class BinaryStreamReader : IDisposable
+    public class BinaryStreamReader : IBinaryReader, IDisposable
     {
         /// <summary>
         /// The underlying <see cref="BinaryReader"/>.
@@ -334,6 +334,9 @@ namespace BinaryMemory
 
             throw new InvalidDataException($"{nameof(ReadBoolean)} encountered non-boolean value: 0x{value:X2}");
         }
+
+        public char ReadChar()
+            => _br.ReadChar();
 
         public byte[] ReadRawColor3()
             => ReadBytes(3);

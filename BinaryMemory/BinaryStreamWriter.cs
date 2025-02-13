@@ -12,7 +12,7 @@ namespace BinaryMemory
     /// A writer that writes to a <see cref="Stream"/>.<br/>
     /// Expands upon <see cref="BinaryWriter"/>.
     /// </summary>
-    public class BinaryStreamWriter : IDisposable
+    public class BinaryStreamWriter : IBinaryWriter, IDisposable
     {
         /// <summary>
         /// The underlying <see cref="BinaryWriter"/>.
@@ -215,6 +215,9 @@ namespace BinaryMemory
             => _bw.Write(SetValueEndianness(BitConverter.DoubleToUInt64Bits(value), BinaryPrimitives.ReverseEndianness));
 
         public void WriteBoolean(bool value)
+            => _bw.Write(value);
+
+        public void WriteChar(char value)
             => _bw.Write(value);
 
         public void WriteVector2(Vector2 value)

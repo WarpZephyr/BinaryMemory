@@ -14,7 +14,7 @@ namespace BinaryMemory
     /// <summary>
     /// A reader for data present in a region of memory.
     /// </summary>
-    public class BinaryMemoryReader
+    public class BinaryMemoryReader : IBinaryReader
     {
         /// <summary>
         /// The underlying memory.
@@ -350,6 +350,9 @@ namespace BinaryMemory
             throw new InvalidDataException($"{nameof(ReadBoolean)} read invalid {nameof(Boolean)} value: {value}");
         }
 #endif
+
+        public char ReadChar()
+            => Read<char>();
 
         public Vector2 ReadVector2()
         {

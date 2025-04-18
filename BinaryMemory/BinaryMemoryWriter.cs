@@ -103,7 +103,7 @@ namespace BinaryMemory
         public BinaryMemoryWriter(Memory<byte> memory, bool bigEndian = false)
         {
             _memory = memory;
-            _steps = new Stack<int>();
+            _steps = [];
             _reservations = [];
             BigEndian = bigEndian;
         }
